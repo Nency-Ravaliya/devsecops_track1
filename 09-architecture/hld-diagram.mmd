@@ -1,0 +1,129 @@
+%%{ init: { 'theme': 'base', 'themeVariables': { 'fontSize': '14px' } } }%%
+flowchart TB
+    %% Trust boundaries
+    subgraph INTERNET["☁️ Internet / Public Zone"]
+        direction LR
+        CITIZEN["👤 Citizens\n(External Users)"]
+        VENDOR["🏢 COTS Vendor\n(License Server)"]
+    end
+
+    subgraph EDGE["🛡️ Edge / Ingress Zone"]
+        direction LR
+        WAF["AWS WAF v2\nOWASP CRS 3.3"]
+        ALB["AWS ALB\nLoad Balancer Controller"]
+    end
+
+    subgraph CLUSTER_BOUNDARY["🔒 EKS Cluster — Trust Boundary"]
+        direction TB
+
+        subgraph CONTROL_PLANE["Control Plane (AWS-managed)"]
+            direction LR
+            API["kube-apiserver\n(Audit Logs → CloudWatch)"]
+            KYVERNO["Kyverno\nAdmission Controller"]
+        end
+
+        subgraph SECURITY_FABRIC["Security Fabric"]
+            direction LR
+            FALCO["Falco 0.38\nDaemonSet\n(Runtime Detection)"]
+            ESO["External Secrets\nOperator v0.10\n(Secrets Sync)"]
+            CILIUM["Cilium 1.16\nNetworkPolicy\n+ WireGuard mTLS"]
+            HUBBLE["Hubble\n(Flow Observability)"]
+        end
+
+        subgraph WORKLOADS["Workload Namespaces"]
+            direction LR
+            subgraph NS_FE["citizen-frontend"]
+                FE_APP["Frontend Pods\nSA: frontend-sa\nIRSA: frontend-eso"]
+            end
+            subgraph NS_BE["citizen-backend"]
+                BE_APP["Backend Pods\nSA: backend-sa\nIRSA: backend-eso"]
+            end
+            subgraph NS_COTS["cots-vendor"]
+                COTS_APP["COTS Pods\nSA: cots-vendor-sa\n(Compensating Controls)"]
+            end
+        end
+
+        subgraph DATA["Data Layer"]
+            direction LR
+            RDS["RDS PostgreSQL\n(encrypted at rest\nKMS envelope)"]
+        end
+    end
+
+    subgraph SECRETS_MGMT["🔑 Secrets & Key Management"]
+        direction LR
+        ASM["AWS Secrets Manager\n(FIPS 140-2 L3 HSM)"]
+        KMS["AWS KMS\n(Envelope Encryption)"]
+        IRSA["IAM OIDC Provider\n(IRSA Roles)"]
+    end
+
+    subgraph CI_CD["🔄 CI/CD Pipeline"]
+        direction LR
+        GITLAB["GitLab\n(self-managed)"]
+        PIPELINE["Pipeline Stages\nLint → Policy → Build\n→ Scan → Sign → Deploy"]
+        COSIGN["Cosign 2.4\nImage Signing\n(KMS-backed)"]
+        SBOM["Trivy/Syft\nSBOM Generation"]
+        CONFTEST["Conftest\nOPA Rego\nPolicy Gates"]
+    end
+
+    subgraph SIEM["📊 Logging & Monitoring"]
+        direction LR
+        CW["CloudWatch Logs\n(Audit + Falco)"]
+        SIEM_TOOL["SIEM\n(Security Dashboard)"]
+        PAGERDUTY["PagerDuty\n(P1 Alerts)"]
+    end
+
+    %% Data flows
+    CITIZEN -->|"HTTPS :443"| WAF
+    WAF --> ALB
+    ALB -->|"TLS termination"| FE_APP
+
+    FE_APP -->|"gRPC :8080"| BE_APP
+    BE_APP -->|"PostgreSQL :5432"| RDS
+
+    COTS_APP -->|"HTTPS :8443\n(restricted by CiliumNetworkPolicy)"| BE_APP
+    COTS_APP -.->|"License check\n(egress proxy)"| VENDOR
+
+    ESO -->|"syncs every 1h"| ASM
+    ASM -.->|"encrypted by"| KMS
+    FE_APP -.->|"IRSA: read-only\nown secret path"| ASM
+    BE_APP -.->|"IRSA: read-only\nown secret path"| ASM
+    COTS_APP -.->|"IRSA: read-only\nown secret path"| ASM
+
+    API -->|"audit events"| CW
+    FALCO -->|"P1: PagerDuty\nP2: Slack\nP3: CloudWatch"| SIEM_TOOL
+    FALCO -->|"alerts"| CW
+    CW --> SIEM_TOOL
+
+    GITLAB -->|"triggers"| PIPELINE
+    PIPELINE -->|"signs image"| COSIGN
+    PIPELINE -->|"generates SBOM"| SBOM
+    PIPELINE -->|"policy gates"| CONFTEST
+    COSIGN -->|"verify at\nadmission time"| KYVERNO
+
+    KYVERNO -->|"validates"| FE_APP
+    KYVERNO -->|"validates"| BE_APP
+    KYVERNO -->|"validates\n(digest-only)"| COTS_APP
+
+    CILIUM -->|"enforces\nNetworkPolicy"| FE_APP
+    CILIUM -->|"enforces\nNetworkPolicy"| BE_APP
+    CILIUM -->|"enforces\nNetworkPolicy"| COTS_APP
+    HUBBLE -->|"observes flows"| CILIUM
+
+    %% Styling
+    classDef internet fill:#e3f2fd,stroke:#1565c0,color:#000
+    classDef edge fill:#fff3e0,stroke:#ef6c00,color:#000
+    classDef cluster fill:#e8f5e9,stroke:#2e7d32,color:#000
+    classDef security fill:#fce4ec,stroke:#c62828,color:#000
+    classDef secrets fill:#f3e5f5,stroke:#7b1fa2,color:#000
+    classDef cicd fill:#e0f7fa,stroke:#00695c,color:#000
+    classDef siem fill:#fff8e1,stroke:#f9a825,color:#000
+    classDef data fill:#efebe9,stroke:#4e342e,color:#000
+
+    class INTERNET internet
+    class EDGE edge
+    class CLUSTER_BOUNDARY cluster
+    class SECURITY_FABRIC security
+    class SECRETS_MGMT secrets
+    class CI_CD cicd
+    class SIEM siem
+    class DATA data

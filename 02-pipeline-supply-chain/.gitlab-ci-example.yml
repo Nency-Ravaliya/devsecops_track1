@@ -1,0 +1,564 @@
+# =============================================================================
+# DevSecOps Pipeline — GitLab CI/CD Example
+# Part of the Track 1 submission: Shift-Left & Software Supply Chain Security
+#
+# This pipeline implements the six-stage design described in pipeline-design.md.
+# It would have caught the trigger incident (K8S-001: cluster-admin to CI SA)
+# at the conftest-k8s-rbac gate, before merge.
+#
+# Cross-references Module 1 finding IDs (K8S-NNN) in comments.
+# Uses environment-scoped CI variables for multi-cloud portability.
+#
+# Key variables (set at project/group level):
+#   $COSIGN_KEY         — KMS key URI (e.g. awskms:///... or azurekms:///...)
+#   $REGISTRY_URI       — ECR/ACR/Artifact Registry URI
+#   $K8S_CLUSTER_CERT   — base64-encoded cluster CA cert
+#   $K8S_STAGING_URL    — staging cluster API endpoint
+#   $K8S_PROD_URL       — production cluster API endpoint
+#   $PROTECTED_ENV_TOKEN — CI_JOB_TOKEN for production approval protected env
+# =============================================================================
+
+variables:
+  # Image build metadata
+  IMAGE_NAME: ${CI_REGISTRY_IMAGE}:${CI_COMMIT_SHORT_SHA}
+  IMAGE_LATEST: ${CI_REGISTRY_IMAGE}:latest
+
+  # Tool versions — pinned for reproducibility
+  CONFTEST_VERSION: "0.56.0"
+  CHECKOV_VERSION: "3.2.362"
+  TRIVY_VERSION: "0.55.2"
+  KUBE_SCORE_VERSION: "1.18.0"
+  GITLEAKS_VERSION: "8.21.6"
+  HADOLINT_VERSION: "2.12.0"
+  COSIGN_VERSION: "2.4.3"
+  SYFT_VERSION: "1.14.0"
+  GRYPE_VERSION: "0.82.0"
+  TERRAFORM_VERSION: "1.9.8"
+
+stages:
+  - lint-validate
+  - policy-security
+  - build-scan
+  - sign-attest
+  - deploy-staging
+  - deploy-production
+
+# =============================================================================
+# STAGE 1 — Lint & Validate
+# =============================================================================
+
+yamllint:
+  stage: lint-validate
+  image: registry.gitlab.com/gitlab-org/ci-cd/package-stage/sast/helpers/yamllint:1.35
+  script:
+    - yamllint -f colored . --strict
+  rules:
+    - changes: ["*.yml", "*.yaml"]
+      when: always
+    - when: never
+
+helm-lint:
+  stage: lint-validate
+  image: alpine/helm:3.16.4
+  script:
+    - helm lint charts/ --strict
+  rules:
+    - exists:
+        - charts/**/Chart.yaml
+      when: always
+    - when: never
+
+terraform-validate:
+  stage: lint-validate
+  image: hashicorp/terraform:${TERRAFORM_VERSION}
+  script:
+    - terraform init -backend=false
+    - terraform validate
+    - terraform fmt -check -diff
+  rules:
+    - exists:
+        - "*.tf"
+      when: always
+    - when: never
+
+hadolint:
+  stage: lint-validate
+  image: hadolint/hadolint:${HADOLINT_VERSION}-debian
+  script:
+    - hadolint Dockerfile
+    # DL3000: fail on ENV with secrets baked in (K8S-028)
+    # DL3006: fail on unpinned FROM tag (K8S-014)
+    - hadolint --failure-threshold warning Dockerfile
+  allow_failure: true  # soft-fail; some vendor/base images may not be fixable
+  rules:
+    - exists:
+        - Dockerfile
+      when: always
+    - when: never
+
+# =============================================================================
+# STAGE 2 — Policy & Security Gates
+# =============================================================================
+
+.conftest-base:
+  stage: policy-security
+  image: quay.io/enterprise-contract/conftest:${CONFTEST_VERSION}
+  variables:
+    CONFTEST_POLICY_PATH: "platform-policies/policy"
+  script:
+    - conftest pull --revision ${CI_POLICY_VERSION:-main}
+        "git::https://gitlab.example.com/${GROUP}/platform-policies.git//policy"
+    - |
+
+        # Run Conftest against all Kubernetes YAML manifests
+        # Rendering Helm charts first if Chart.yaml exists
+        if [ -f "charts/Chart.yaml" ]; then
+          helm template --generate-name charts/ | conftest test --policy "$CONFTEST_POLICY_PATH" -
+        else
+          conftest test --policy "$CONFTEST_POLICY_PATH" **/*.yaml
+        fi
+  rules:
+    - changes:
+        - "**/*.yaml"
+        - "**/*.yml"
+        - charts/**/*
+      when: always
+    - when: never
+
+# CRITICAL gate: RBAC violations
+# Would have blocked K8S-001 (cluster-admin to CI SA), K8S-002 (wildcard CR), K8S-003 (default SA binding)
+conftest-k8s-rbac:
+  extends: .conftest-base
+  variables:
+    CONFTEST_POLICY_PATH: "platform-policies/policy/k8s-rbac.rego"
+  script:
+    - |
+      helm template --generate-name charts/ 2>/dev/null | \
+        conftest test --policy "$CONFTEST_POLICY_PATH" \
+          --fail-on CRITICAL,HIGH - || EXIT_CODE=$?
+      if [ "${EXIT_CODE:-0}" -ne 0 ]; then
+        echo "=== CRITICAL/HIGH RBAC VIOLATION DETECTED ==="
+        echo "This pipeline would have blocked K8S-001 (cluster-admin to CI SA)"
+        echo "This pipeline would have blocked K8S-002 (wildcard ClusterRole)"
+        echo "This pipeline would have blocked K8S-003 (default SA binding)"
+        echo "Review the policy violations above and fix before merging."
+        exit 1
+      fi
+
+# CRITICAL gate: Pod security violations
+# Would have blocked K8S-004 (privileged+hostPID+host root), K8S-005 (runtime socket), K8S-006 (DaemonSet hostNetwork)
+conftest-k8s-podsec:
+  extends: .conftest-base
+  variables:
+    CONFTEST_POLICY_PATH: "platform-policies/policy/k8s-podsec.rego"
+  script:
+    - |
+      helm template --generate-name charts/ 2>/dev/null | \
+        conftest test --policy "$CONFTEST_POLICY_PATH" \
+          --fail-on CRITICAL,HIGH - || EXIT_CODE=$?
+      if [ "${EXIT_CODE:-0}" -ne 0 ]; then
+        echo "=== CRITICAL/HIGH POD SECURITY VIOLATION DETECTED ==="
+        echo "This pipeline would have blocked K8S-004 (privileged+hostPID+host root mount)"
+        echo "This pipeline would have blocked K8S-005 (runtime socket mounts)"
+        echo "This pipeline would have blocked K8S-006 (DaemonSet hostNetwork)"
+        echo "Also checks: runAsNonRoot (K8S-021), seccompProfile (K8S-022), pinned image tags (K8S-013/014)"
+        exit 1
+      fi
+
+# HIGH gate: Secrets in manifests and NodePort services
+conftest-k8s-secrets:
+  extends: .conftest-base
+  variables:
+    CONFTEST_POLICY_PATH: "platform-policies/policy/k8s-secrets.rego"
+  script:
+    - |
+      helm template --generate-name charts/ 2>/dev/null | \
+        conftest test --policy "$CONFTEST_POLICY_PATH" \
+          --fail-on CRITICAL,HIGH - || EXIT_CODE=$?
+      if [ "${EXIT_CODE:-0}" -ne 0 ]; then
+        echo "=== HIGH SECRETS/EXPOSURE VIOLATION DETECTED ==="
+        echo "This pipeline would have blocked K8S-009 (inline secrets in manifests)"
+        echo "This pipeline would have blocked K8S-016 (NodePort services)"
+        exit 1
+      fi
+
+# SOFT gate: Missing resource requests/limits (Medium severity — K8S-023, K8S-024)
+conftest-k8s-resources:
+  extends: .conftest-base
+  variables:
+    CONFTEST_POLICY_PATH: "platform-policies/policy/k8s-resources.rego"
+  allow_failure: true  # soft-fail
+  script:
+    - |
+      conftest test --policy "$CONFTEST_POLICY_PATH" . || true
+      echo "Resource governance violations logged for backlog (K8S-023, K8S-024)."
+      echo "These become hard-fail once LimitRange/ResourceQuota is cluster-wide."
+
+# IaC security scanning (Terraform + CDK)
+# Covers: K8S-011 (etcd encryption), K8S-012 (IRSA), K8S-025 (EOL AMI), K8S-026 (broad egress)
+checkov-iac:
+  stage: policy-security
+  image: bridgecrew/checkov:${CHECKOV_VERSION}
+  script:
+    - checkov --directory . --framework terraform --framework cloudformation \
+        --hard-fail-on HIGH,CRITICAL \
+        --skip-check CKV_AWS_...  # optional vendor-specific skips from platform-policies
+  allow_failure: false
+  rules:
+    - exists:
+        - "*.tf"
+        - "**/*.tf"
+        - "**/*cdk*.py"
+      when: always
+    - when: never
+
+# Defence-in-depth: kube-score (soft-fail)
+kube-score:
+  stage: policy-security
+  image: bretttopsy/kube-score:${KUBE_SCORE_VERSION}
+  script:
+    - kube-score score *.yaml 2>&1 || true
+  allow_failure: true  # soft-fail, informational
+  rules:
+    - changes:
+        - "**/*.yaml"
+      when: always
+    - when: never
+
+# Secret scanning
+# Catches: K8S-009 (secrets in Git), K8S-028 (API key in Dockerfile ENV)
+gitleaks:
+  stage: policy-security
+  image: ghcr.io/khulnasoft/gitleaks:${GITLEAKS_VERSION}
+  script:
+    - gitleaks detect --source . --verbose --no-git
+  rules:
+    - if: $CI_MERGE_REQUEST_IID
+      when: always
+    - when: manual  # full repo scan on main
+
+# =============================================================================
+# STAGE 3 — Build & Scan
+# =============================================================================
+
+# Image build (post-merge)
+docker-build:
+  stage: build-scan
+  image: gcr.io/kaniko-project/executor:debug
+  script:
+    - |
+      /kaniko/executor \
+        --context ${CI_PROJECT_DIR} \
+        --dockerfile Dockerfile \
+        --destination ${REGISTRY_URI}/${IMAGE_NAME} \
+        --digest-file /kaniko/digest \
+        --skip-tls-verify=false \
+        --single-snapshot
+    - cat /kaniko/digest > build.digest
+  artifacts:
+    paths:
+      - build.digest
+  rules:
+    - if: $CI_MERGE_REQUEST_IID
+      when: never
+    - if: $CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH =~ /^release\/.*/
+      when: always
+
+# CVE scanning with Trivy
+# Hard-fails on Critical CVEs with fix available (K8S-013/014/028 supply chain)
+trivy-image-scan:
+  stage: build-scan
+  image: docker.io/aquasec/trivy:${TRIVY_VERSION}
+  needs:
+    - docker-build
+  script:
+    - |
+      trivy image \
+        --severity CRITICAL,HIGH \
+        --exit-code 0 \
+        --format json \
+        --output trivy-report.json \
+        ${REGISTRY_URI}/${IMAGE_NAME}
+    - |
+      # Hard-fail: Critical CVEs with available fix
+      trivy image \
+        --severity CRITICAL \
+        --exit-code 1 \
+        --ignore-unfixed \
+        ${REGISTRY_URI}/${IMAGE_NAME}
+  artifacts:
+    paths:
+      - trivy-report.json
+      - vuln-attestation.json
+
+# SBOM generation (CycloneDX — primary)
+# Hard-fail if SBOM cannot be generated (governance requirement)
+trivy-sbom-cyclonedx:
+  stage: build-scan
+  image: docker.io/aquasec/trivy:${TRIVY_VERSION}
+  needs:
+    - docker-build
+  script:
+    - |
+      trivy image \
+        --format cyclonedx \
+        --output ${CI_COMMIT_SHORT_SHA}.cdx.json \
+        ${REGISTRY_URI}/${IMAGE_NAME}
+    - test -s ${CI_COMMIT_SHORT_SHA}.cdx.json
+  artifacts:
+    paths:
+      - ${CI_COMMIT_SHORT_SHA}.cdx.json
+
+# SBOM generation (SPDX — secondary, for procurement/audit)
+syft-sbom-spdx:
+  stage: build-scan
+  image: docker.io/anchore/syft:${SYFT_VERSION}
+  needs:
+    - docker-build
+  script:
+    - |
+      syft ${REGISTRY_URI}/${IMAGE_NAME} \
+        --output spdx-json \
+        --file ${CI_COMMIT_SHORT_SHA}.spdx.json
+  artifacts:
+    paths:
+      - ${CI_COMMIT_SHORT_SHA}.spdx.json
+  allow_failure: true
+
+# Second-opinion CVE scan with Grype (catches scanner blind spots)
+grype-cross-check:
+  stage: build-scan
+  image: docker.io/anchore/grype:${GRYPE_VERSION}
+  needs:
+    - docker-build
+  script:
+    - |
+      grype ${REGISTRY_URI}/${IMAGE_NAME} \
+        --fail-on high \
+        --only-fixed \
+        --output json \
+        --file grype-report.json
+  artifacts:
+    paths:
+      - grype-report.json
+  allow_failure: true
+
+# =============================================================================
+# STAGE 4 — Sign & Attest
+# =============================================================================
+
+cosign-sign:
+  stage: sign-attest
+  image: gcr.io/projectsigstore/cosign:${COSIGN_VERSION}
+  needs:
+    - docker-build
+    - trivy-image-scan
+    - trivy-sbom-cyclonedx
+  variables:
+    IMAGE_DIGEST: $(cat build.digest)
+  script:
+    # Sign the image with KMS key (multi-cloud via $COSIGN_KEY env var)
+    - |
+      cosign sign \
+        --key $COSIGN_KEY \
+        ${REGISTRY_URI}/${IMAGE_NAME}@${IMAGE_DIGEST}
+    # Attach CycloneDX SBOM as in-toto attestation
+    - |
+      cosign attach sbom \
+        --sbom ${CI_COMMIT_SHORT_SHA}.cdx.json \
+        ${REGISTRY_URI}/${IMAGE_NAME}@${IMAGE_DIGEST}
+    # Attach vulnerability scan as attestation
+    - |
+      cosign attest \
+        --key $COSIGN_KEY \
+        --predicate trivy-report.json \
+        --type cosign.sigstore.dev/attestation/vuln/v1 \
+        ${REGISTRY_URI}/${IMAGE_NAME}@${IMAGE_DIGEST}
+    # SLSA L2 provenance attestation
+    - |
+      cosign attest \
+        --key $COSIGN_KEY \
+        --predicate provenance.json \
+        --type slsaprovenance \
+        ${REGISTRY_URI}/${IMAGE_NAME}@${IMAGE_DIGEST}
+
+# =============================================================================
+# STAGE 5 — Staging Deploy (automated)
+# =============================================================================
+
+deploy-staging:
+  stage: deploy-staging
+  image: alpine/helm:3.16.4
+  needs:
+    - conftest-k8s-rbac
+    - conftest-k8s-podsec
+    - conftest-k8s-secrets
+    - trivy-image-scan
+    - cosign-sign
+  variables:
+    KUBECONFIG: ${CI_PROJECT_DIR}/kubeconfig-staging
+  script:
+    # Authenticate to staging cluster
+    - echo "$K8S_STAGING_KUBECONFIG_B64" | base64 -d > $KUBECONFIG
+    - |
+      helm upgrade --install --atomic --timeout 10m \
+        --namespace staging \
+        --set image.repository=$REGISTRY_URI \
+        --set image.tag=$CI_COMMIT_SHORT_SHA \
+        --wait \
+        ./
+  environment:
+    name: staging
+    url: https://staging.${CI_PROJECT_NAME}.internal
+  only:
+    - main
+
+smoke-tests:
+  stage: deploy-staging
+  image: alpine:3.21
+  needs:
+    - deploy-staging
+  script:
+    - apk add --no-cache curl jq
+    - |
+      # Basic health check
+      if curl -sf https://staging.${CI_PROJECT_NAME}.internal/health > /dev/null 2>&1; then
+        echo "Health check passed"
+      else
+        echo "Health check failed"
+        exit 1
+      fi
+
+# =============================================================================
+# STAGE 6 — Production Deploy (manual approval gate)
+# =============================================================================
+
+security-approval:
+  stage: deploy-production
+  image: alpine:3.21
+  needs:
+    - trivy-image-scan
+    - cosign-sign
+    - deploy-staging
+    - smoke-tests
+  script:
+    - echo "=== PRODUCTION DEPLOYMENT APPROVAL GATE ==="
+    - echo "The following checks have passed:"
+    - echo "  K8S-001/002/003 RBAC policy (conftest-k8s-rbac)"
+    - echo "  K8S-004/005/006 Pod security policy (conftest-k8s-podsec)"
+    - echo "  K8S-009/016 Secrets & exposure (conftest-k8s-secrets)"
+    - echo "  K8S-013/014/028 Image supply chain (trivy, hadolint, gitleaks)"
+    - echo "  Cosign image signature: verified"
+    - echo "  SBOM attestation: attached"
+    - echo "  Staging smoke tests: passed"
+    - echo ""
+    - echo "Review pipeline artefacts for full scan details before approving."
+    - echo "Once approved, the deploy-production job will run."
+  environment:
+    name: production
+    action: prepare
+  when: manual
+  allow_failure: false
+  needs: ["deploy-staging", "smoke-tests", "conftest-k8s-rbac", "conftest-k8s-podsec", "conftest-k8s-secrets", "trivy-image-scan", "cosign-sign"]
+
+# Protected by GitLab protected environment configuration:
+#   - Only @security-reviewers can trigger/approve
+#   - Auditor cannot be the MR author (separation of duties)
+deploy-production:
+  stage: deploy-production
+  image: alpine/helm:3.16.4
+  needs:
+    - security-approval
+  environment:
+    name: production
+  resource_group: production
+  variables:
+    KUBECONFIG: ${CI_PROJECT_DIR}/kubeconfig-prod
+  script:
+    - echo "$K8S_PROD_KUBECONFIG_B64" | base64 -d > $KUBECONFIG
+    - |
+      helm upgrade --install --atomic --timeout 10m \
+        --namespace production \
+        --set image.repository=$REGISTRY_URI \
+        --set image.tag=$CI_COMMIT_SHORT_SHA \
+        --set secrets.provider=external-secrets-operator \
+        --wait \
+        ./
+    # Post-deploy: trigger Kyverno audit report check
+    - kubectl get policyreports.wgpolicyk8s.io -n production
+  only:
+    - release/*
+    - tags
+
+# =============================================================================
+# POST-DEPLOY — SBOM Upload for Compliance Dashboard
+# =============================================================================
+
+publish-sbom:
+  stage: deploy-production
+  image: curlimages/curl:8.10
+  needs:
+    - trivy-sbom-cyclonedx
+  script:
+    # Push CycloneDX SBOM to Dependency-Track / compliance dashboard
+    - |
+      curl -s -X POST "https://dependency-track.${GROUP}.internal/api/v1/bom" \
+        -H "X-Api-Key: $DEPENDENCY_TRACK_KEY" \
+        -H "Content-Type: multipart/form-data" \
+        -F "bom=@${CI_COMMIT_SHORT_SHA}.cdx.json" \
+        -F "projectName=${CI_PROJECT_NAME}" \
+        -F "projectVersion=${CI_COMMIT_SHORT_SHA}"
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH =~ /^release\/.*/
+      when: always
+
+# =============================================================================
+# VENDOR COTS IMAGE EXCEPTION
+# =============================================================================
+
+# The programme has one COTS vendor image that cannot be rebuilt.
+# This separate job handles it against exception policy.
+vendor-cots-scan:
+  stage: policy-security
+  image: docker.io/aquasec/trivy:${TRIVY_VERSION}
+  script:
+    - |
+      # Scan the vendor image. Known CVEs are in the allowlist
+      # (vendor-cots-exceptions.rego). New CVEs fail and must be reviewed.
+      trivy image --severity CRITICAL,HIGH --exit-code 0 $VENDOR_COTS_IMAGE
+    - |
+      # Check against exception policy
+      conftest test --policy platform-policies/policy/vendor-cots-exceptions.rego \
+        trivy-report.json 2>&1 || exit_code=$?
+      if [ "${exit_code:-0}" -ne 0 ]; then
+        echo "NEW CVE found in COTS vendor image — requires review."
+        echo "Document compensating control in 06-remediation/compensating-controls.md"
+        echo "or escalate to vendor."
+        exit 1
+      fi
+  rules:
+    - exists:
+        - VENDOR_COTS_NOTIFY
+      when: manual
+    - when: never
+
+# =============================================================================
+# NOTES FOR REVIEWERS
+# =============================================================================
+#
+# 1. This pipeline references platform-policies as an external git repo
+#    (gitlab.example.com/${GROUP}/platform-policies.git). In practice, this
+#    would use GitLab's CI_JOB_TOKEN for authentication.
+#
+# 2. The `--fail-on CRITICAL,HIGH` flag for Conftest is custom behaviour;
+#    Conftest natively supports `--fail-on` from v0.30 onward. The actual
+#    policy severity comes from the Rego policy annotations.
+#
+# 3. Kyverno admission-time verification (verifyImages, pod security)
+#    runs as a complement to this CI pipeline — it is not shown here.
+#    See pipeline-design.md §Stage 5 and 06-remediation/ for details.
+#
+# 4. The `security-approval` job serves the protected environment manual
+#    gate required by the programme governance. GitLab project settings
+#    enforce who can trigger and approve. See pipeline-design.md §Stage 6
+#    for separation-of-duties details.

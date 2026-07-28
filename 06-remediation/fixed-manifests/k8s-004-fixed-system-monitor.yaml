@@ -1,0 +1,108 @@
+# =============================================================================
+# K8S-004 FIX: system-monitor deployment with hardened security context
+#
+# BEFORE (VULNERABLE — reference-target/scenarios/system-monitor/deployment.yaml):
+#   - hostPID: true, hostIPC: true
+#   - hostPath: / (entire host filesystem, read-write)
+#   - privileged: true, allowPrivilegeEscalation: true
+#   - Secrets injected as environment variables
+#
+# AFTER (FIXED — this file):
+#   - hostPID/hostIPC removed
+#   - host root filesystem mount removed
+#   - privileged: false, allowPrivilegeEscalation: false
+#   - runAsNonRoot: true, runAsUser: 65534 (nobody)
+#   - seccompProfile: RuntimeDefault
+#   - All capabilities dropped
+#   - Secrets mounted as projected volume, not env vars
+# =============================================================================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: system-monitor-deployment
+  namespace: citizen-frontend
+  labels:
+    app: system-monitor
+    remediation.k8s-id: K8S-004
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: system-monitor
+  template:
+    metadata:
+      labels:
+        app: system-monitor
+    spec:
+      # REMOVED: hostPID: true
+      # REMOVED: hostIPC: true
+      # REMOVED: hostPath: / (entire host filesystem)
+
+      serviceAccountName: system-monitor-sa
+      # Do NOT use the default SA — always specify explicitly (K8S-003 fix)
+
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534   # nobody
+        runAsGroup: 65534
+        fsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+
+      containers:
+      - name: system-monitor
+        image: madhuakula/k8s-goat-system-monitor:0.1.0
+        # REMOVED: :latest tag — pinned to specific version (K8S-014 fix)
+
+        ports:
+        - containerPort: 8080
+
+        resources:
+          limits:
+            memory: "50Mi"
+            cpu: "20m"
+          requests:
+            memory: "50Mi"
+            cpu: "20m"
+            # Added requests — were missing before (K8S-024)
+
+        securityContext:
+          allowPrivilegeEscalation: false
+          # REMOVED: privileged: true
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+              - ALL
+            # No capabilities added — only drop
+
+        volumeMounts:
+        - name: vault-key
+          mountPath: /etc/secrets
+          readOnly: true
+        - name: tmp
+          mountPath: /tmp
+
+        # REMOVED: env K8S_GOAT_VAULT_KEY from secretKeyRef
+        # Secrets now mounted as projected volume, not env var (K8S-010 fix)
+
+      volumes:
+      - name: vault-key
+        secret:
+          secretName: goatvault
+          defaultMode: 0400
+      - name: tmp
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: system-monitor-service
+  namespace: citizen-frontend
+spec:
+  ports:
+  - protocol: TCP
+    port: 8080
+    targetPort: 8080
+  selector:
+    app: system-monitor

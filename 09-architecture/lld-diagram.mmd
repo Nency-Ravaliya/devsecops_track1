@@ -1,0 +1,125 @@
+%%{ init: { 'theme': 'base', 'themeVariables': { 'fontSize': '12px' } } }%%
+flowchart TB
+    subgraph INTERNET_EXT["☁️ Internet"]
+        CITIZEN["👤 Citizen Browser"]
+    end
+
+    subgraph AWS_VPC["AWS VPC — 10.0.0.0/16"]
+        subgraph PUBLIC_SUBNET["Public Subnets (3 AZs)"]
+            ALB["Application Load Balancer\nARN: arn:aws:elasticloadbalancing:...\nWAF: arn:aws:wafv2:..."]
+        end
+
+        subgraph PRIVATE_SUBNET["Private Subnets (3 AZs)"]
+            subgraph EKS_NODE_GROUP["EKS Managed Node Group\nami-0abcdef1234567890\n(amazon-linux-2-x86_64)"]
+                subgraph NODE_1["Node: ip-10-0-1-42\nKernel: 5.10 (eBPF)"]
+                    subgraph CILIUM_NODE["Cilium eBPF Data Plane"]
+                        subgraph FE_NAMESPACE["Namespace: citizen-frontend\nPSA: Restricted"]
+                            subgraph FE_POD["Pod: frontend-deploy-7f8c9b\nSA: frontend-sa\nIRSA: arn:aws:iam::123:role/citizen-frontend-eso"]
+                                FE_CONTAINER["Container: frontend\nimage: registry/frontend@sha256:abc...\nsecurityContext:\n  runAsNonRoot: true\n  runAsUser: 1000\n  readOnlyRootFilesystem: true\n  allowPrivilegeEscalation: false\n  capabilities.drop: [ALL]\n  seccompProfile: RuntimeDefault"]
+                                FE_SECRET_VOLUME["Volume: vault-key\nType: projected (from K8s Secret)\n  → mounted at /etc/secrets"]
+                                FE_TMP["Volume: tmp\nType: emptyDir"]
+                            end
+                            FE_NP["CiliumNetworkPolicy:\n  ingress: ALB SG → TCP/443\n  egress: → citizen-backend TCP/8080\n          → kube-dns UDP/53\n          → egress-proxy TCP/443"]
+                        end
+
+                        subgraph BE_NAMESPACE["Namespace: citizen-backend\nPSA: Restricted"]
+                            subgraph BE_POD["Pod: backend-deploy-3a2d1e\nSA: backend-sa\nIRSA: arn:aws:iam::123:role/citizen-backend-eso"]
+                                BE_CONTAINER["Container: backend\nimage: registry/backend@sha256:def...\nsecurityContext:\n  runAsNonRoot: true\n  runAsUser: 1000\n  readOnlyRootFilesystem: true\n  allowPrivilegeEscalation: false\n  capabilities.drop: [ALL]\n  seccompProfile: RuntimeDefault"]
+                                BE_SECRET_VOLUME["Volume: vault-key\nType: projected (from K8s Secret)"]
+                            end
+                            BE_NP["CiliumNetworkPolicy:\n  ingress: citizen-frontend → TCP/8080\n  egress: → RDS TCP/5432 (VPC CIDR)\n          → kube-dns UDP/53"]
+                        end
+
+                        subgraph COTS_NAMESPACE["Namespace: cots-vendor\nPSA: Restricted"]
+                            subgraph COTS_POD["Pod: cots-deploy-9f4e2a\nSA: cots-vendor-sa\nIRSA: arn:aws:iam::123:role/cots-vendor-eso"]
+                                COTS_CONTAINER["Container: cots-vendor\nimage: registry/cots@sha256:ghi...\n⚠️ Runs as root (vendor requirement)\n⚠️ Known CVEs (accepted risk)"]
+                                COTS_SECRET_VOLUME["Volume: cots-license\nType: projected (from K8s Secret)"]
+                            end
+                            COTS_NP["CiliumNetworkPolicy:\n  ingress: citizen-backend → TCP/8443\n  egress: → egress-proxy TCP/443\n          → kube-dns UDP/53\n          (all other egress DENIED)"]
+                        end
+
+                        subgraph EGRESS_NS["Namespace: egress-proxy"]
+                            EGRESS["Squid Proxy\n(2 replicas, PDB min=1)\nEgress allowlist enforced"]
+                        end
+                    end
+
+                    subgraph NODE_SECURITY["Node-Level Security"]
+                        FALCO_DAEMON["Falco 0.38 DaemonSet\nDriver: eBPF (privileged: false)\nRules: P1 Critical / P2 High / P3 Medium"]
+                        CLOUDWATCH_AGENT["CloudWatch Agent\nDaemonSet (node metrics)"]
+                    end
+                end
+            end
+
+            subgraph EKS_CONTROL_PLANE["EKS Control Plane (AWS-managed)"]
+                API_SERVER["kube-apiserver\nAudit Policy: all verbs on RBAC + Secrets + Pods\nAudit → CloudWatch Logs\nEncryption: KMS envelope (arn:aws:kms:...)"]
+                KYVERNO_CP["Kyverno 1.13\nAdmission Controller\nPolicies:\n  - verifyImages (Cosign)\n  - podSecurity (Restricted)\n  - denyNodePort\n  - cotsVendorRestrictions"]
+                OIDC["OIDC Provider\n(aws-iam.amazonaws.com)"]
+            end
+        end
+
+        subgraph SECRETS_LAYER["Secrets Layer"]
+            ASM["AWS Secrets Manager\narn:aws:secretsmanager:eu-west-2:123:secret:citizen/frontend/db-pass\nEncryption: AWS KMS (FIPS 140-2 L3)\nRotation: 30 days (auto)"]
+            KMS["AWS KMS Key\narn:aws:kms:eu-west-2:123:key/abc-123\nUsage: Secrets Manager encryption\nAccess: ESO IRSA role only"]
+        end
+
+        subgraph CI_LAYER["CI/CD Pipeline (GitLab Self-Managed)"]
+            GITLAB_CI["GitLab CI Pipeline\nStages: lint → policy → build → scan → sign → deploy"]
+            CONFTEST_CI["Conftest 0.56\nOPA Rego Policies\n  k8s-rbac.rego (K8S-001/002/003)\n  k8s-podsec.rego (K8S-004/005/006)\n  k8s-secrets.rego (K8S-009/016)"]
+            TRIVY_CI["Trivy 0.55\nImage CVE Scan\nCritical → hard-fail\nHigh with fix → 14-day SLA"]
+            COSIGN_SIGN["Cosign 2.4\nSign with: awskms:///arn:aws:kms:...\nAttest: SBOM (CycloneDX)\nAttest: Vulnerability scan\nAttest: SLSA provenance"]
+        end
+
+        subgraph MONITORING["Monitoring & Detection"]
+            CW_LOGS["CloudWatch Logs\nRetention: 90 days hot, 1 year cold\nLog Groups:\n  /aws/eks/citizen-cluster/cluster (audit)\n  /aws/falco/citizen-cluster (runtime)\n  /aws/ec2/node-metrics (node)"]
+            PAGERDUTY["PagerDuty\n(P1: container escape, RBAC mutation)"]
+            SLACK_SEC["Slack #security-alerts\n(P2: drift, shell spawn)"]
+        end
+    end
+
+    %% Data flows
+    CITIZEN -->|"HTTPS :443"| ALB
+    ALB -->|"TLS → HTTP\n(X-Forwarded-For)"| FE_CONTAINER
+
+    FE_CONTAINER -->|"gRPC :8080\n(Cilium mTLS)"| BE_CONTAINER
+    BE_CONTAINER -->|"PostgreSQL TLS\n:5432 (VPC private)"| RDS["RDS PostgreSQL\nEncryption: KMS\nBackup: daily snapshot\nMulti-AZ: yes"]
+
+    COTS_CONTAINER -->|"HTTPS :8443\n(restricted ingress)"| BE_CONTAINER
+    COTS_CONTAINER -.->|"License validation\n(via egress proxy)"| VENDOR_EXT["Vendor License Server\n(external)"]
+
+    ESO_SYNC["ESO Controller\n(namespace: external-secrets)"] -->|"polls every 1h"| ASM
+    ASM -.->|"encrypted by"| KMS
+    FE_SECRET_VOLUME -.->|"ESO syncs → K8s Secret\n→ projected volume"| ASM
+    BE_SECRET_VOLUME -.->|"ESO syncs → K8s Secret\n→ projected volume"| ASM
+    COTS_SECRET_VOLUME -.->|"ESO syncs → K8s Secret\n→ projected volume"| ASM
+
+    FALCO_DAEMON -->|"P1 alerts"| PAGERDUTY
+    FALCO_DAEMON -->|"P2 alerts"| SLACK_SEC
+    FALCO_DAEMON -->|"all events"| CW_LOGS
+    API_SERVER -->|"audit events"| CW_LOGS
+
+    GITLAB_CI -->|"triggers build"| TRIVY_CI
+    GITLAB_CI -->|"policy gate"| CONFTEST_CI
+    GITLAB_CI -->|"sign image"| COSIGN_SIGN
+    COSIGN_SIGN -.->|"verify at admission"| KYVERNO_CP
+    CONFTEST_CI -.->|"blocks merge\nif Critical/High"| GITLAB_CI
+
+    OIDC -.->|"IRSA token exchange"| ESO_SYNC
+
+    %% Styling
+    classDef public fill:#e3f2fd,stroke:#1565c0,color:#000
+    classDef private fill:#e8f5e9,stroke:#2e7d32,color:#000
+    classDef control fill:#fff3e0,stroke:#ef6c00,color:#000
+    classDef secrets fill:#f3e5f5,stroke:#7b1fa2,color:#000
+    classDef security fill:#fce4ec,stroke:#c62828,color:#000
+    classDef cicd fill:#e0f7fa,stroke:#00695c,color:#000
+    classDef monitor fill:#fff8e1,stroke:#f9a825,color:#000
+    classDef cots fill:#ffebee,stroke:#b71c1c,color:#000
+
+    class INTERNET_EXT public
+    class PRIVATE_SUBNET private
+    class EKS_CONTROL_PLANE control
+    class SECRETS_LAYER secrets
+    class NODE_SECURITY security
+    class CI_LAYER cicd
+    class MONITORING monitor
+    class COTS_NAMESPACE cots

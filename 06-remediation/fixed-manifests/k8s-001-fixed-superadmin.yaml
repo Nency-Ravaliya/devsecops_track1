@@ -1,0 +1,60 @@
+# =============================================================================
+# K8S-001 FIX: Replace cluster-admin binding with namespace-scoped least-privilege
+#
+# BEFORE (VULNERABLE — reference-target/scenarios/insecure-rbac/setup.yaml):
+#   - ServiceAccount "superadmin" in kube-system
+#   - ClusterRoleBinding "superadmin" → built-in ClusterRole "cluster-admin"
+#   - Result: full cluster control for any pod using this SA
+#
+# AFTER (FIXED — this file):
+#   - ServiceAccount moved to application namespace (not kube-system)
+#   - ClusterRoleBinding DELETED — replaced with namespace-scoped Role
+#   - Role grants only the specific permissions the workload needs
+# =============================================================================
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: system-monitor-sa
+  namespace: citizen-frontend
+  # NOTE: SA moved OUT of kube-system. Custom SAs should never live in kube-system.
+  labels:
+    app.kubernetes.io/managed-by: remediation
+    remediation.k8s-id: K8S-001
+---
+# This ClusterRoleBinding has been DELETED.
+# The original "superadmin" ClusterRoleBinding that granted cluster-admin
+# is no longer present. Do NOT recreate it.
+#
+# kubectl delete clusterrolebinding superadmin
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: system-monitor-role
+  namespace: citizen-frontend
+rules:
+  # Only the specific API groups, resources, and verbs the workload needs.
+  # NOT: apiGroups: ["*"], resources: ["*"], verbs: ["*"]
+  - apiGroups: [""]
+    resources: ["pods", "services", "endpoints"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: system-monitor-binding
+  namespace: citizen-frontend
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: system-monitor-role
+subjects:
+  - kind: ServiceAccount
+    name: system-monitor-sa
+    namespace: citizen-frontend
+    # NOTE: subject namespace MUST match RoleBinding namespace.
+    # This prevents cross-namespace privilege escalation.
