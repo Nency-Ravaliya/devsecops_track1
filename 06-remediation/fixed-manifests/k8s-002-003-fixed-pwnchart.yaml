@@ -1,0 +1,53 @@
+# =============================================================================
+# FIX: K8S-002 / K8S-003 — pwnchart RBAC remediation
+# -----------------------------------------------------------------------------
+# BEFORE (vulnerable):
+#   K8S-002: ClusterRole with wildcard rules:
+#     rules:
+#       - apiGroups: ["*"]
+#         resources: ["*"]
+#         verbs: ["*"]
+#   K8S-003: ClusterRoleBinding granted that role to the "default"
+#   ServiceAccount in every namespace — any pod running under the default SA
+#   had full cluster-admin-equivalent access (classic pwnchart pattern).
+#
+# AFTER (fixed):
+#   - Wildcard ClusterRole and cluster-wide binding DELETED.
+#   - Namespace-scoped Role with the minimal permissions the app actually
+#     needs (read its own ConfigMaps and list its own pods).
+#   - Bound to a dedicated ServiceAccount, never "default"; the default SA
+#     keeps zero permissions and automountServiceAccountToken disabled.
+# =============================================================================
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: pwnchart-app
+  namespace: citizen-backend
+automountServiceAccountToken: false   # token mounted only if explicitly needed
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role                            # K8S-002: namespace-scoped, no wildcards
+metadata:
+  name: pwnchart-app-minimal
+  namespace: citizen-backend
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding                     # K8S-003: bound to dedicated SA, not default
+metadata:
+  name: pwnchart-app-minimal
+  namespace: citizen-backend
+subjects:
+  - kind: ServiceAccount
+    name: pwnchart-app
+    namespace: citizen-backend
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: pwnchart-app-minimal

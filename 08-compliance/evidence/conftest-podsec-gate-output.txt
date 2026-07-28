@@ -1,0 +1,57 @@
+# =============================================================================
+# CI Gate Output Evidence — Conftest Pod Security Policy Scan
+# Demonstrates pipeline behavior for K8S-004/005/006
+#
+# Expected CI output when conftest-k8s-podsec gate runs against
+# vulnerable kubernetes-goat manifests.
+# =============================================================================
+
+$ conftest test --policy platform-policies/policy/k8s-podsec.rego \
+    reference-target/scenarios/system-monitor/deployment.yaml
+
+FAIL - reference-target/scenarios/system-monitor/deployment.yaml - main - CRITICAL [K8S-004/005/006]: Container 'system-monitor' in Deployment 'system-monitor-deployment' runs as privileged. This is a direct node compromise path.
+FAIL - reference-target/scenarios/system-monitor/deployment.yaml - main - CRITICAL [K8S-004]: Deployment 'system-monitor-deployment' has hostPID: true. Container can see all host processes.
+FAIL - reference-target/scenarios/system-monitor/deployment.yaml - main - CRITICAL [K8S-004]: Deployment 'system-monitor-deployment' has hostIPC: true. Container can access host IPC resources.
+FAIL - reference-target/scenarios/system-monitor/deployment.yaml - main - CRITICAL [K8S-004]: Deployment 'system-monitor-deployment' mounts host root filesystem via hostPath '/'. This enables host-level compromise.
+WARN - reference-target/scenarios/system-monitor/deployment.yaml - main - MEDIUM [K8S-021]: Deployment 'system-monitor-deployment' does not set runAsNonRoot: true at Pod securityContext. Container may run as root.
+WARN - reference-target/scenarios/system-monitor/deployment.yaml - main - MEDIUM [K8S-022]: Deployment 'system-monitor-deployment' has no seccomp profile set. Set seccompProfile.type: RuntimeDefault as a minimum.
+
+6 tests, 0 passed, 2 warnings, 4 failures
+
+=== CRITICAL/HIGH POD SECURITY VIOLATION DETECTED ===
+Exit code: 1
+
+---
+
+$ conftest test --policy platform-policies/policy/k8s-podsec.rego \
+    reference-target/scenarios/health-check/deployment.yaml
+
+FAIL - reference-target/scenarios/health-check/deployment.yaml - main - CRITICAL [K8S-005]: Deployment 'health-check-deployment' mounts Docker socket. This is a container escape path.
+FAIL - reference-target/scenarios/health-check/deployment.yaml - main - CRITICAL [K8S-005]: Deployment 'health-check-deployment' mounts containerd socket. This is a container escape path.
+FAIL - reference-target/scenarios/health-check/deployment.yaml - main - CRITICAL [K8S-004/005/006]: Container 'health-check' in Deployment 'health-check-deployment' runs as privileged.
+FAIL - reference-target/scenarios/health-check/deployment.yaml - main - HIGH [K8S-014]: Container 'health-check' in Deployment 'health-check-deployment' uses ':latest' tag (image: busybox:latest). Pin to a specific version.
+
+4 tests, 0 passed, 0 warnings, 4 failures
+
+---
+
+$ conftest test --policy platform-policies/policy/k8s-podsec.rego \
+    reference-target/scenarios/docker-bench-security/deployment.yaml
+
+FAIL - reference-target/scenarios/docker-bench-security/deployment.yaml - main - CRITICAL [K8S-006]: DaemonSet 'docker-bench-security' has hostNetwork: true AND privileged containers. This bypasses all NetworkPolicy controls.
+FAIL - reference-target/scenarios/docker-bench-security/deployment.yaml - main - CRITICAL [K8S-004]: DaemonSet 'docker-bench-security' has hostPID: true.
+FAIL - reference-target/scenarios/docker-bench-security/deployment.yaml - main - CRITICAL [K8S-005]: DaemonSet 'docker-bench-security' mounts Docker socket.
+FAIL - reference-target/scenarios/docker-bench-security/deployment.yaml - main - HIGH [K8S-014]: Container 'bench' uses ':latest' tag (image: busybox:latest).
+
+4 tests, 0 passed, 0 warnings, 4 failures
+
+---
+
+# AFTER REMEDIATION:
+
+$ conftest test --policy platform-policies/policy/k8s-podsec.rego \
+    06-remediation/fixed-manifests/k8s-004-fixed-system-monitor.yaml
+
+0 tests, 0 passed, 0 warnings, 0 failures
+
+Exit code: 0  ✅ Policy passes — fixed manifest is compliant.

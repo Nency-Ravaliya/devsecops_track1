@@ -1,0 +1,106 @@
+# =============================================================================
+# cilium-values.yaml
+# Helm values — Cilium 1.16.x on EKS, replacing the AWS VPC CNI
+# -----------------------------------------------------------------------------
+# Install:
+#   helm repo add cilium https://helm.cilium.io/
+#   helm install cilium cilium/cilium --version 1.16.6 \
+#     --namespace kube-system -f cilium-values.yaml
+#
+# Prerequisites (zero-trust-design.md Section 2.2 "CNI Migration"):
+#   - Patch/remove the aws-node DaemonSet so the VPC CNI stops managing ENIs:
+#       kubectl -n kube-system patch daemonset aws-node --type='strategic' \
+#         -p '{"spec":{"template":{"spec":{"nodeSelector":{"io.cilium/aws-node-enabled":"false"}}}}}'
+#   - Node IAM role needs EC2 ENI permissions (Cilium manages ENIs directly).
+#
+# Design reference: zero-trust-design.md — Section 2 "CNI Architecture",
+#                   Section 5 "Observability", Section 6 "Encryption in Transit"
+# Control mapping : K8S-015/K8S-016 enforcement engine; supports encryption
+#                   and observability controls.
+# =============================================================================
+
+# --- ENI IPAM mode: pods get native VPC IPs (replaces AWS VPC CNI) -----------
+# Native routing keeps pod IPs visible to VPC flow logs and security groups
+# (needed for the RDS SG control in cilium-citizen-backend.yaml).
+eni:
+  enabled: true
+  # Let Cilium create/attach ENIs itself; first interface stays for the node.
+  awsEnablePrefixDelegation: true   # Better IP density on nitro instances
+  awsReleaseExcessIPs: true         # Return unused IPs to the VPC pool
+ipam:
+  mode: eni
+egressMasqueradeInterfaces: eth+
+routingMode: native                  # No overlay; native VPC routing
+endpointRoutes:
+  enabled: true                      # Required for ENI mode
+
+# Ensure Cilium wins over any leftover aws-node CNI config on nodes.
+cni:
+  exclusive: true
+
+# --- eBPF datapath -----------------------------------------------------------
+# BPF masquerading replaces iptables NAT: faster, and keeps policy identity
+# intact for observability (zero-trust-design.md Section 2.3).
+bpf:
+  masquerade: true
+kubeProxyReplacement: true           # Full eBPF service handling (no kube-proxy)
+k8sServiceHost: REPLACE_WITH_EKS_API_ENDPOINT   # e.g. xxxx.gr7.eu-west-2.eks.amazonaws.com
+k8sServicePort: 443
+
+# --- Encryption in transit: WireGuard ---------------------------------------
+# Transparent node-to-node/pod-to-pod encryption. Satisfies the programme's
+# encryption-in-transit requirement for east-west traffic without requiring
+# every workload (incl. the COTS vendor black box) to implement mTLS
+# (zero-trust-design.md Section 6.1).
+encryption:
+  enabled: true
+  type: wireguard
+  nodeEncryption: true
+
+# --- Hubble: flow observability ---------------------------------------------
+# Provides the audit evidence for K8S-015/016 and Compensating Control 1:
+# every allowed/denied flow (incl. L7 DNS decisions) is observable and can be
+# exported to the central SIEM (zero-trust-design.md Section 5).
+hubble:
+  enabled: true
+  relay:
+    enabled: true
+  ui:
+    enabled: true                    # Restrict access via RBAC/ingress policy
+  metrics:
+    enableOpenMetrics: true
+    enabled:
+      - dns:query
+      - drop
+      - tcp
+      - flow
+      - port-distribution
+      - icmp
+      - httpV2:exemplars=true;labelsContext=source_ip,source_namespace,source_workload,destination_ip,destination_namespace,destination_workload,traffic_direction
+  export:
+    fileMaxSizeMb: 50
+    fileMaxBackups: 5
+
+# --- Cluster mesh: DISABLED (single-cloud initially) ------------------------
+# The multi-cloud programme will enable ClusterMesh in a later phase once the
+# second cloud's cluster is accredited (zero-trust-design.md Section 7).
+clustermesh:
+  useAPIServer: false
+cluster:
+  name: gov-eks-prod
+  id: 1                              # Unique ID reserved for future mesh
+
+# --- Operator & agent hardening ---------------------------------------------
+operator:
+  replicas: 2                        # HA for the ENI/IPAM control loop
+  prometheus:
+    enabled: true
+prometheus:
+  enabled: true                      # Agent metrics for the platform SIEM
+
+# Fail-closed policy behaviour: default-deny is applied via NetworkPolicy
+# manifests (default-deny-all.yaml); audit mode is OFF in production.
+policyEnforcementMode: default
+
+# Roll out Cilium-managed pods automatically on config change.
+rollOutCiliumPods: true

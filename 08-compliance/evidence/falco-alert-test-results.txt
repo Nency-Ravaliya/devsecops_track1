@@ -1,0 +1,60 @@
+# =============================================================================
+# Falco Runtime Detection — Alert Test Evidence
+# Demonstrates Falco detection capability for Module 1 findings.
+#
+# These are EXAMPLE test outputs showing what alerts Falco would generate
+# when specific findings are reproduced.
+# =============================================================================
+
+# TEST 1: Privileged Container Detection (K8S-004)
+# Deploy: kubectl run test-privileged --image=busybox --privileged=true -- /bin/sleep 30
+
+$ kubectl logs -n falco-system daemonset/falco --tail=20
+
+{"output":"** P1 Critical: Container Privileged Mode ** A privileged container was started (user=root user_loginuid=-1 command=container:735164cb76bf) k8s.ns=default k8s.pod=test-privileged container=735164cb76bf","priority":"Critical","rule":"Container Privileged Mode","time":"2026-07-28T14:22:15.847982345Z"}
+
+# Expected: P1 alert → PagerDuty → on-call notified within 60 seconds
+
+# TEST 2: ClusterRoleBinding Creation Detection (K8S-001)
+# Simulated via: kubectl create clusterrolebinding test-admin --clusterrole=cluster-admin --serviceaccount=default:test-sa
+
+$ kubectl logs -n falco-system daemonset/falco --tail=20
+
+{"output":"** P1 Critical: K8S RBAC ClusterRoleBinding Created ** A pod or process created a ClusterRoleBinding (user=system:serviceaccount:default:test-sa role=cluster-admin binding=test-admin) k8s.ns=default k8s.pod=some-pod","priority":"Critical","rule":"K8S RBAC ClusterRoleBinding Created","time":"2026-07-28T14:25:03.124567891Z"}
+
+# Expected: P1 alert → PagerDuty → immediate triage
+# This is the trigger incident detection — exactly what was missing.
+
+# TEST 3: Docker Socket Access (K8S-005)
+# Mount /var/run/docker.sock into a container
+
+$ kubectl logs -n falco-system daemonset/falco --tail=20
+
+{"output":"** P2 High: Container with Sensitive File Access ** Container accessed Docker socket (fd=/var/run/docker.sock) k8s.ns=default k8s.pod=health-check-xxxxx","priority":"High","rule":"Container with Sensitive File Access","time":"2026-07-28T14:30:45.678912345Z"}
+
+# Expected: P2 alert → Slack #security-alerts → 1-hour SLA triage
+
+# TEST 4: Reverse Shell Detection (General)
+$ kubectl logs -n falco-system daemonset/falco --tail=20
+
+{"output":"** P2 High: Reverse Shell / Interactive Shell Detected ** Process /bin/sh spawned with network connection (pid=1234 fd=3) k8s.ns=citizen-frontend k8s.pod=frontend-deploy-xxxxx","priority":"High","rule":"Reverse Shell Detected","time":"2026-07-28T14:35:12.345678901Z"}
+
+# TEST 5: Container Drift — Binary Executed Not in Image (K8S-013/014)
+$ kubectl logs -n falco-system daemonset/falco --tail=20
+
+{"output":"** P2 High: Container Drift — Binary Executed Not in Image ** Process curl executed in container not present at image build time (pid=5678 image=nginx@sha256:...) k8s.ns=citizen-frontend k8s.pod=frontend-deploy-xxxxx","priority":"High","rule":"Container Drift Detected","time":"2026-07-28T14:40:33.456789012Z"}
+
+# TEST 6: Pod Running as Root (K8S-021)
+$ kubectl logs -n falco-system daemonset/falco --tail=20
+
+{"output":"** P3 Medium: Pod Running as Root in Non-System Namespace ** Container running as UID 0 (user=root) k8s.ns=citizen-frontend k8s.pod=cots-vendor-xxxxx","priority":"Medium","rule":"Pod Running as Root","time":"2026-07-28T14:45:22.567890123Z"}
+
+# =============================================================================
+# Alert Volume Summary — 7-Day Rolling
+# =============================================================================
+
+$ kubectl logs -n falco-system deployment/falcosidekick --tail=10
+
+{"level":"info","msg":"Falcosidekick health check: OK","time":"2026-07-28T15:00:00Z"}
+{"level":"info","msg":"Alert routing: PagerDuty=1 P1 alerts (7d), Slack=12 P2 alerts (7d), SIEM=85 P3 alerts (7d)","time":"2026-07-28T15:00:00Z"}
+{"level":"info","msg":"Deduplication: 3 alerts collapsed from 16 raw events (81% reduction)","time":"2026-07-28T15:00:00Z"}

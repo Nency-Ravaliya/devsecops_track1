@@ -1,0 +1,44 @@
+# =============================================================================
+# Stakater Reloader — automatic rollout on secret rotation
+# -----------------------------------------------------------------------------
+# ESO refreshes the K8s Secret (refreshInterval: 1h), but running pods do not
+# re-read mounted secrets atomically for all apps, and never re-read env vars.
+# Reloader watches Secrets/ConfigMaps and performs a rolling restart of any
+# annotated workload when the referenced secret changes.
+#
+# Install: helm install reloader stakater/reloader -n reloader --create-namespace
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: citizen-frontend
+  namespace: citizen-frontend
+  annotations:
+    # Option A (recommended, explicit): restart only when these secrets change
+    secret.reloader.stakater.com/reload: "frontend-secrets"
+    # Option B (broad): restart when ANY referenced Secret/ConfigMap changes
+    # reloader.stakater.com/auto: "true"
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: citizen-frontend
+  template:
+    metadata:
+      labels:
+        app: citizen-frontend
+    spec:
+      containers:
+        - name: frontend
+          image: registry.example.gov.uk/citizen/frontend@sha256:9f2c1a7e4b8d0c3f6a5e2d1b8c7f4a3e6d9b0c1f2a3e4d5b6c7f8a9e0d1b2c3f
+          ports:
+            - containerPort: 8080
+          volumeMounts:
+            - name: secrets
+              mountPath: /var/run/secrets/app
+              readOnly: true          # K8S-010: secrets via volume, not env
+      volumes:
+        - name: secrets
+          secret:
+            secretName: frontend-secrets
+            defaultMode: 0400

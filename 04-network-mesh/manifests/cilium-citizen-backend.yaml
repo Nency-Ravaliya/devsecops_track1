@@ -1,0 +1,88 @@
+# =============================================================================
+# cilium-citizen-backend.yaml
+# CiliumNetworkPolicy — citizen-backend namespace (explicit allow-list)
+# -----------------------------------------------------------------------------
+# Control mapping : K8S-015 (default-deny + explicit allows)
+#                   K8S-016 (identity-aware segmentation)
+# Design reference: zero-trust-design.md — Section 3.4 "Backend Tier Policy"
+#
+# Traffic matrix:
+#   IN : citizen-frontend pods             -> TCP/8080 (API calls)
+#   OUT: RDS in VPC (10.0.0.0/16)          -> TCP/5432 (PostgreSQL)
+#   OUT: cots-vendor pods                  -> TCP/8443 (vendor service API)
+#   OUT: kube-dns (kube-system)            -> UDP/53, TCP/53
+#   All other ingress and egress DENIED.
+#
+# Security rationale:
+#   The backend holds citizen data credentials. Ingress is limited to the
+#   frontend identity (not the whole cluster), and egress is limited to the
+#   database, the ring-fenced COTS vendor service, and DNS. The RDS rule uses
+#   the VPC CIDR because RDS endpoints are outside Cilium's identity model;
+#   security groups on the RDS side provide the complementary control
+#   (defence in depth, zero-trust-design.md Section 3.4.2).
+# =============================================================================
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: citizen-backend-policy
+  namespace: citizen-backend
+  labels:
+    app.kubernetes.io/part-of: zero-trust-baseline
+    security.gov.programme/control: k8s-015-k8s-016
+  annotations:
+    security.gov.programme/control-id: "K8S-015, K8S-016"
+    security.gov.programme/design-ref: "zero-trust-design.md#3.4-backend-tier-policy"
+    security.gov.programme/rationale: >-
+      Data tier. Ingress only from frontend identity on TCP/8080. Egress only
+      to RDS (TCP/5432), the segregated COTS vendor service (TCP/8443), and
+      cluster DNS. All other egress denied to prevent exfiltration of citizen
+      data.
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/tier: backend
+  ingress:
+    # --- Ingress: frontend pods only, API port only -------------------------
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: citizen-frontend
+            app.kubernetes.io/tier: frontend
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+  egress:
+    # --- Egress: DNS to kube-dns --------------------------------------------
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+          rules:
+            dns:
+              - matchPattern: "*"   # Tighten to explicit FQDNs after baseline
+    # --- Egress: RDS PostgreSQL within the VPC ------------------------------
+    # RDS is outside the cluster identity model; scoped by VPC CIDR + port.
+    # Complemented by RDS security groups restricting source to backend node
+    # ENIs (Cilium ENI mode preserves pod source IPs for SG matching).
+    - toCIDR:
+        - 10.0.0.0/16
+      toPorts:
+        - ports:
+            - port: "5432"
+              protocol: TCP
+    # --- Egress: COTS vendor service (ring-fenced) --------------------------
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: cots-vendor
+      toPorts:
+        - ports:
+            - port: "8443"
+              protocol: TCP
+  # All other egress denied (allow-list semantics + default-deny baseline).

@@ -1,0 +1,57 @@
+# =============================================================================
+# Kyverno ClusterPolicy: deny-nodeport
+# -----------------------------------------------------------------------------
+# Purpose:   Block Services of type NodePort cluster-wide. NodePort exposes
+#            workloads on every node's IP, bypassing ingress controls, WAF and
+#            centralised TLS termination. Break-glass namespaces are exempt
+#            for approved incident-response use only.
+# Findings:  K8S-016 (NodePort services exposing workloads on node IPs)
+# Severity:  High -> validationFailureAction: Enforce
+# =============================================================================
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: deny-nodeport
+  labels:
+    app.kubernetes.io/part-of: devsecops-assessment-track1
+    app.kubernetes.io/component: network-exposure
+    policy.assessment/module: "02-pipeline-supply-chain"
+    policy.assessment/severity: high
+  annotations:
+    policies.kyverno.io/title: Disallow NodePort Services
+    policies.kyverno.io/category: Network Security
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Service
+    policies.kyverno.io/minversion: 1.11.0
+    assessment.findings/ids: "K8S-016"
+    policies.kyverno.io/description: >-
+      Blocks creation of NodePort Services in all namespaces except designated
+      break-glass namespaces. Use LoadBalancer/Ingress via the approved
+      ingress path instead.
+spec:
+  validationFailureAction: Enforce
+  background: true
+  failurePolicy: Fail
+  rules:
+    - name: block-nodeport-services
+      match:
+        any:
+          - resources:
+              kinds:
+                - Service
+      exclude:
+        any:
+          # Break-glass namespaces: time-boxed, change-controlled exceptions
+          # for incident response only. Access is audited.
+          - resources:
+              namespaces:
+                - break-glass
+                - incident-response
+      validate:
+        message: >-
+          Services of type NodePort are prohibited (K8S-016). Expose workloads
+          via the approved Ingress/LoadBalancer path. NodePort is permitted
+          only in break-glass namespaces under change control.
+        pattern:
+          spec:
+            =(type): "!NodePort"

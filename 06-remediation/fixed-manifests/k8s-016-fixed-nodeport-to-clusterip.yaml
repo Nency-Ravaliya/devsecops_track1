@@ -1,0 +1,59 @@
+# =============================================================================
+# FIX: K8S-016 — internal-proxy exposed via NodePort
+# -----------------------------------------------------------------------------
+# BEFORE (vulnerable):
+#   kind: Service
+#   spec:
+#     type: NodePort
+#     ports:
+#       - port: 8080
+#         nodePort: 30808     # open on EVERY node IP, bypassing the ingress
+#                             # layer, WAF, TLS termination and network policy
+#                             # assumptions; reachable from anything that can
+#                             # route to the node subnet
+#
+# AFTER (fixed):
+#   - Service type changed to ClusterIP (cluster-internal only)
+#   - External access (where genuinely required) goes through the Ingress
+#     controller with TLS, so traffic passes the WAF/ingress policy layer
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: internal-proxy
+  namespace: platform-ops
+spec:
+  type: ClusterIP               # K8S-016: was NodePort 30808
+  selector:
+    app: internal-proxy
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: internal-proxy
+  namespace: platform-ops
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    # Restrict to internal ranges — this endpoint is not public
+    nginx.ingress.kubernetes.io/whitelist-source-range: "10.0.0.0/8"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - proxy.internal.example.gov.uk
+      secretName: internal-proxy-tls
+  rules:
+    - host: proxy.internal.example.gov.uk
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: internal-proxy
+                port:
+                  number: 8080

@@ -1,0 +1,220 @@
+# =============================================================================
+# falcosidekick-deployment.yaml
+# falcosidekick 3.x — alert routing for Falco events
+#
+# DevSecOps Assessment - Track 1 - Module 3 (Runtime Security)
+# See: 03-runtime-security/runtime-detection-ir-plan.md, sections 2.4-2.6
+#
+# Routing model (per IR plan):
+#   P1 Critical (Falco CRITICAL)  -> PagerDuty (on-call) + Slack + CloudWatch
+#   P2 High     (Falco WARNING)   -> Slack #security-alerts + CloudWatch
+#   P3 Medium   (Falco NOTICE)    -> CloudWatch Logs only (weekly bulk triage)
+#   All events                    -> CloudWatch Logs (SIEM sink, 90d hot / 1y S3 Glacier)
+# Deduplication: identical alerts from the same pod collapsed within 5 minutes.
+# =============================================================================
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: falcosidekick
+  namespace: falco-system
+  labels:
+    app.kubernetes.io/name: falcosidekick
+    app.kubernetes.io/part-of: runtime-security
+  annotations:
+    # IRSA role granting logs:CreateLogStream / logs:PutLogEvents on
+    # /aws/falco/* log groups only (least privilege — no static AWS keys,
+    # consistent with K8S-009/010 secrets remediation).
+    eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/falcosidekick-cloudwatch
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: falcosidekick-config
+  namespace: falco-system
+  labels:
+    app.kubernetes.io/name: falcosidekick
+    app.kubernetes.io/part-of: runtime-security
+data:
+  falcosidekick.yaml: |
+    listenaddress: 0.0.0.0
+    listenport: 2801
+    debug: false
+
+    # -------------------------------------------------------------------
+    # Deduplication: 5-minute window (IR plan section 2.5). Identical
+    # alerts from the same pod within the window collapse to one
+    # notification on Slack/PagerDuty. CloudWatch receives every event
+    # (full evidence trail for forensics).
+    # -------------------------------------------------------------------
+    alert:
+      throttle:
+        enabled: true
+        window: 5m
+        maxburst: 1
+
+    customfields:
+      programme: "gov-multicloud-k8s"
+      cluster: "citizen-cluster"
+      environment: "production"
+
+    # -------------------------------------------------------------------
+    # Output 1: AWS CloudWatch Logs — SIEM sink, ALL priorities.
+    # Auth via IRSA (no accesskeyid/secretaccesskey configured).
+    # -------------------------------------------------------------------
+    aws:
+      region: eu-west-2
+      cloudwatchlogs:
+        loggroup: /aws/falco/citizen-cluster
+        logstream: falco-alerts
+        minimumpriority: notice        # P3 and above
+
+    # -------------------------------------------------------------------
+    # Output 2: Slack #security-alerts — P2 (WARNING) and above.
+    # Webhook URL injected from Secret via env var
+    # SLACK_WEBHOOKURL (never committed to git — K8S-009).
+    # -------------------------------------------------------------------
+    slack:
+      channel: "#security-alerts"
+      username: "falco-runtime-detection"
+      minimumpriority: warning         # P2 High and P1 Critical
+      messageformat: "*{{ .Priority }}* — {{ .Rule }} | ns={{ index .OutputFields \"k8s.ns.name\" }} pod={{ index .OutputFields \"k8s.pod.name\" }}"
+      outputformat: all
+
+    # -------------------------------------------------------------------
+    # Output 3: PagerDuty — P1 (CRITICAL) ONLY via priority routing.
+    # Routing key injected from Secret via env var PAGERDUTY_ROUTINGKEY.
+    # Pages the on-call security engineer for immediate triage (IR plan
+    # section 2.6: P1 -> PagerDuty -> immediate triage).
+    # -------------------------------------------------------------------
+    pagerduty:
+      minimumpriority: critical        # P1 only
+      region: eu
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: falcosidekick
+  namespace: falco-system
+  labels:
+    app.kubernetes.io/name: falcosidekick
+    app.kubernetes.io/part-of: runtime-security
+spec:
+  replicas: 2                          # HA — alert path must survive node loss
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: falcosidekick
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: falcosidekick
+        app.kubernetes.io/part-of: runtime-security
+      annotations:
+        checksum/config: "{{ sidekick-config-checksum }}"
+    spec:
+      serviceAccountName: falcosidekick
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: falcosidekick
+                topologyKey: kubernetes.io/hostname
+      securityContext:
+        runAsNonRoot: true             # sidekick does NOT need root (unlike Falco)
+        runAsUser: 1234
+        fsGroup: 1234
+        seccompProfile:
+          type: RuntimeDefault         # K8S-022 compliant
+      containers:
+        - name: falcosidekick
+          image: falcosecurity/falcosidekick:2.29.0
+          imagePullPolicy: IfNotPresent
+          args: ["-c", "/etc/falcosidekick/falcosidekick.yaml"]
+          env:
+            # Secret-sourced credentials (K8S-009/010: no secrets in
+            # ConfigMaps or env literals; Secret backed by AWS Secrets
+            # Manager via External Secrets Operator).
+            - name: SLACK_WEBHOOKURL
+              valueFrom:
+                secretKeyRef:
+                  name: falcosidekick-secrets
+                  key: slack-webhook-url
+            - name: PAGERDUTY_ROUTINGKEY
+              valueFrom:
+                secretKeyRef:
+                  name: falcosidekick-secrets
+                  key: pagerduty-routing-key
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+          ports:
+            - name: http
+              containerPort: 2801
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /ping
+              port: 2801
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /ping
+              port: 2801
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - name: config
+              mountPath: /etc/falcosidekick
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: falcosidekick-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: falcosidekick
+  namespace: falco-system
+  labels:
+    app.kubernetes.io/name: falcosidekick
+    app.kubernetes.io/part-of: runtime-security
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: falcosidekick
+  ports:
+    - name: http
+      port: 2801
+      targetPort: 2801
+      protocol: TCP
+---
+# Placeholder Secret manifest — values populated by External Secrets Operator
+# from AWS Secrets Manager (falco/sidekick/*). Committed with empty stringData
+# intentionally; real values NEVER enter git (K8S-009 remediation pattern).
+apiVersion: v1
+kind: Secret
+metadata:
+  name: falcosidekick-secrets
+  namespace: falco-system
+  labels:
+    app.kubernetes.io/name: falcosidekick
+    app.kubernetes.io/part-of: runtime-security
+  annotations:
+    programme.gov/source: aws-secrets-manager
+type: Opaque
+stringData:
+  slack-webhook-url: "REPLACED_BY_EXTERNAL_SECRETS_OPERATOR"
+  pagerduty-routing-key: "REPLACED_BY_EXTERNAL_SECRETS_OPERATOR"

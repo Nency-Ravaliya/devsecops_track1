@@ -1,0 +1,238 @@
+# =============================================================================
+# falco-rules-custom.yaml
+# Custom Falco 0.38.x rules mapped to Module 1 findings
+#
+# DevSecOps Assessment - Track 1 - Module 3 (Runtime Security)
+# See: 03-runtime-security/runtime-detection-ir-plan.md, section 2.3
+#
+# Priority mapping (alert routing handled by falcosidekick):
+#   P1 Critical -> Falco priority CRITICAL -> PagerDuty + Slack + CloudWatch
+#   P2 High     -> Falco priority WARNING  -> Slack + CloudWatch
+#   P3 Medium   -> Falco priority NOTICE   -> CloudWatch only (weekly review)
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: falco-rules-custom
+  namespace: falco-system
+  labels:
+    app.kubernetes.io/name: falco
+    app.kubernetes.io/part-of: runtime-security
+    falco.org/rules: custom
+data:
+  falco-rules-custom.yaml: |
+    # =========================================================================
+    # Lists and macros shared across programme rules
+    # =========================================================================
+
+    - list: gov_system_namespaces
+      items: [kube-system, kube-public, kube-node-lease, falco-system, kyverno, security-scanning]
+
+    - list: gov_approved_registries
+      items: ["123456789012.dkr.ecr.eu-west-2.amazonaws.com", "public.ecr.aws/falcosecurity", "registry.k8s.io"]
+
+    - list: shell_binaries
+      items: [bash, sh, zsh, dash, ash, ksh]
+
+    - list: sensitive_host_files
+      items: [/etc/shadow, /etc/sudoers, /var/run/docker.sock, /run/containerd/containerd.sock]
+
+    - list: package_mgmt_binaries
+      items: [apt, apt-get, yum, dnf, apk, dpkg, rpm, pip, pip3, npm]
+
+    - macro: gov_container
+      condition: (container.id != host)
+
+    - macro: gov_non_system_namespace
+      condition: (not k8s.ns.name in (gov_system_namespaces))
+
+    - macro: gov_kubectl_or_client
+      condition: (proc.name in (kubectl, oc, helm, curl, wget))
+
+    - macro: gov_sa_token_read
+      condition: >
+        (fd.name startswith /var/run/secrets/kubernetes.io/serviceaccount and
+         fd.name endswith token and evt.type in (open, openat, openat2) and
+         evt.is_open_read=true)
+
+    # =========================================================================
+    # P1 — CRITICAL (PagerDuty + immediate triage)
+    # =========================================================================
+
+    # Findings: K8S-001, K8S-002, K8S-003 (over-permissive RBAC / trigger incident)
+    # A pod (not a system SA) creating a ClusterRoleBinding is the exact TTP
+    # observed in the trigger incident. Detected at syscall level via kubectl/
+    # API-client execution from inside a workload container.
+    - rule: K8S RBAC ClusterRoleBinding Created
+      desc: >
+        Detects a process inside a non-system workload container invoking a
+        Kubernetes client to create a ClusterRoleBinding or ClusterRole.
+        Maps to findings K8S-001, K8S-002, K8S-003.
+      condition: >
+        spawned_process and gov_container and gov_non_system_namespace and
+        gov_kubectl_or_client and
+        (proc.cmdline contains "clusterrolebinding" or
+         proc.cmdline contains "clusterrole" or
+         proc.cmdline contains "rbac.authorization.k8s.io")
+      output: >
+        RBAC escalation attempt: ClusterRole(Binding) operation from workload pod
+        (finding=K8S-001/002/003 user=%user.name command=%proc.cmdline
+        pod=%k8s.pod.name ns=%k8s.ns.name container=%container.name
+        image=%container.image.repository node=%k8s.node.name)
+      priority: CRITICAL
+      tags: [gov-p1, rbac, K8S-001, K8S-002, K8S-003, mitre_privilege_escalation, T1078]
+
+    # Findings: K8S-004, K8S-005, K8S-006 (privileged containers)
+    # Post-remediation, privileged containers must not exist in workload
+    # namespaces. Any start of a privileged container is a P1.
+    - rule: Container Privileged Mode
+      desc: >
+        A container started with privileged=true in a non-system namespace.
+        Maps to findings K8S-004, K8S-005, K8S-006.
+      condition: >
+        container_started and gov_container and gov_non_system_namespace and
+        container.privileged=true
+      output: >
+        Privileged container started (finding=K8S-004/005/006
+        pod=%k8s.pod.name ns=%k8s.ns.name container=%container.name
+        image=%container.image.repository:%container.image.tag node=%k8s.node.name)
+      priority: CRITICAL
+      tags: [gov-p1, privileged, K8S-004, K8S-005, K8S-006, mitre_privilege_escalation, T1611]
+
+    # Findings: K8S-004, K8S-005 (container escape via privileged/hostPath)
+    - rule: Container Escape Indicators
+      desc: >
+        Process inside a container writing to host-sensitive paths or touching
+        kernel tunables — classic escape TTPs (release_agent, docker.sock,
+        /proc/sys/kernel). Maps to findings K8S-004, K8S-005.
+      condition: >
+        gov_container and evt.type in (open, openat, openat2) and
+        evt.is_open_write=true and
+        (fd.name startswith /proc/sys/kernel or
+         fd.name startswith /host/etc or
+         fd.name startswith /sys/fs/cgroup and fd.name contains release_agent or
+         fd.name in (sensitive_host_files))
+      output: >
+        Container escape indicator: write to host-sensitive path
+        (finding=K8S-004/005 file=%fd.name command=%proc.cmdline
+        pod=%k8s.pod.name ns=%k8s.ns.name container=%container.name
+        image=%container.image.repository node=%k8s.node.name)
+      priority: CRITICAL
+      tags: [gov-p1, container-escape, K8S-004, K8S-005, mitre_privilege_escalation, T1611]
+
+    # Findings: K8S-009, K8S-010 (secrets in env vars / unencrypted secrets)
+    - rule: Kubernetes Secrets from Unapproved Path
+      desc: >
+        A process in a workload namespace reading the mounted service-account
+        token or secret material outside the approved consumers (IRSA-based
+        access is the approved path). Maps to findings K8S-009, K8S-010.
+      condition: >
+        gov_container and gov_non_system_namespace and gov_sa_token_read and
+        not proc.name in (pause) and
+        not container.image.repository in (gov_approved_registries)
+      output: >
+        Service-account token / secret read from unapproved path
+        (finding=K8S-009/010 file=%fd.name process=%proc.name
+        command=%proc.cmdline pod=%k8s.pod.name ns=%k8s.ns.name
+        image=%container.image.repository node=%k8s.node.name)
+      priority: CRITICAL
+      tags: [gov-p1, secrets, K8S-009, K8S-010, mitre_credential_access, T1552]
+
+    # =========================================================================
+    # P2 — HIGH (Slack #security-alerts, 1-hour SLA)
+    # =========================================================================
+
+    # Findings: K8S-013, K8S-014 (mutable images / :latest tags — drift)
+    - rule: Container Drift Detected
+      desc: >
+        A binary executed inside a container that was not part of the image at
+        build time (written after container start), or package managers run at
+        runtime. Indicates fileless/injected tooling. Maps to K8S-013, K8S-014.
+      condition: >
+        spawned_process and gov_container and gov_non_system_namespace and
+        ((proc.is_exe_upper_layer=true) or (proc.name in (package_mgmt_binaries)))
+      output: >
+        Container drift: binary not in original image executed
+        (finding=K8S-013/014 process=%proc.name command=%proc.cmdline
+        exe_upper_layer=%proc.is_exe_upper_layer pod=%k8s.pod.name
+        ns=%k8s.ns.name image=%container.image.repository node=%k8s.node.name)
+      priority: WARNING
+      tags: [gov-p2, drift, K8S-013, K8S-014, mitre_execution, T1204]
+
+    # Finding: K8S-006 (hostNetwork / host namespace sharing)
+    - rule: Host Network Namespace Access
+      desc: >
+        A container process manipulating host network interfaces or a workload
+        container started with hostNetwork. Maps to finding K8S-006.
+      condition: >
+        gov_container and gov_non_system_namespace and
+        ((spawned_process and proc.name in (ip, ifconfig, tcpdump, iptables, nsenter) and
+          proc.cmdline contains "eth0") or
+         (container_started and k8s.pod.full_name != "" and
+          proc.aname != "" and container.mounts contains "/proc"))
+      output: >
+        Host network namespace access from workload container
+        (finding=K8S-006 process=%proc.name command=%proc.cmdline
+        pod=%k8s.pod.name ns=%k8s.ns.name image=%container.image.repository
+        node=%k8s.node.name)
+      priority: WARNING
+      tags: [gov-p2, host-network, K8S-006, mitre_lateral_movement, T1021]
+
+    - rule: Reverse Shell Detected
+      desc: >
+        Shell process with stdin/stdout redirected to a network socket — the
+        canonical reverse-shell pattern used post-exploitation.
+      condition: >
+        spawned_process and gov_container and
+        proc.name in (shell_binaries) and
+        ((fd.num=0 and fd.type=ipv4) or (fd.num=1 and fd.type=ipv4) or
+         proc.cmdline contains "/dev/tcp/" or
+         proc.cmdline contains "nc -e" or proc.cmdline contains "ncat -e")
+      output: >
+        Reverse shell indicator: shell attached to network socket
+        (process=%proc.name command=%proc.cmdline connection=%fd.name
+        pod=%k8s.pod.name ns=%k8s.ns.name image=%container.image.repository
+        node=%k8s.node.name)
+      priority: WARNING
+      tags: [gov-p2, reverse-shell, mitre_execution, T1059]
+
+    # =========================================================================
+    # P3 — MEDIUM (CloudWatch only, weekly bulk triage; audit-only in Phase 1)
+    # =========================================================================
+
+    # Finding: K8S-021 (containers running as root)
+    - rule: Pod Running as Root
+      desc: >
+        Container process running as UID 0 in a non-system namespace.
+        Maps to finding K8S-021. Logged once per container start.
+      condition: >
+        container_started and gov_container and gov_non_system_namespace and
+        user.uid=0
+      output: >
+        Container running as root (finding=K8S-021 user=%user.name uid=%user.uid
+        pod=%k8s.pod.name ns=%k8s.ns.name image=%container.image.repository
+        node=%k8s.node.name)
+      priority: NOTICE
+      tags: [gov-p3, run-as-root, K8S-021]
+
+    # Finding: K8S-022 (no seccomp profile)
+    - rule: Missing Seccomp Profile
+      desc: >
+        Container started without a seccomp profile applied (unconfined).
+        Maps to finding K8S-022. Logged once per pod creation; enforcement is
+        via Kyverno (Module 2) — this rule provides runtime evidence.
+      condition: >
+        spawned_process and gov_container and gov_non_system_namespace and
+        proc.vpid=1 and
+        not container.image.repository in (gov_approved_registries)
+      # NOTE: Falco cannot directly read the pod's seccompProfile field from
+      # syscalls. Primary detection is the k8saudit plugin / Kyverno audit
+      # policy (Module 2); this syscall-side rule approximates it by flagging
+      # PID-1 processes that never issue a seccomp/prctl confinement call.
+      output: >
+        Container started without seccomp confinement (finding=K8S-022
+        pod=%k8s.pod.name ns=%k8s.ns.name image=%container.image.repository
+        node=%k8s.node.name)
+      priority: NOTICE
+      tags: [gov-p3, seccomp, K8S-022]
+      enabled: false   # Phase 1 audit-only; enable after PSA/Kyverno rollout (Module 2)

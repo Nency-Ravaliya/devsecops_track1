@@ -1,0 +1,88 @@
+# =============================================================================
+# cilium-cots-vendor.yaml
+# CiliumNetworkPolicy — cots-vendor namespace (maximum ring-fencing)
+# -----------------------------------------------------------------------------
+# Control mapping : Compensating Control 1 — network micro-segmentation of the
+#                   unscannable COTS vendor container (see compensating
+#                   controls register); supports K8S-015 / K8S-016.
+# Design reference: zero-trust-design.md — Section 4 "COTS Vendor Isolation"
+#
+# Traffic matrix (deliberately minimal — this workload is a vendor black box
+# that cannot be patched or scanned to programme standards):
+#   IN : citizen-backend pods              -> TCP/8443 (mTLS vendor API) ONLY
+#   OUT: egress-proxy namespace            -> TCP/443 (vendor licence
+#        validation, destination allow-listed at the proxy) ONLY
+#   OUT: kube-dns (kube-system)            -> UDP/53, TCP/53
+#   ALL other ingress and egress DENIED — including all cluster-internal
+#   traffic, node metadata endpoints, and direct internet.
+#
+# Security rationale:
+#   Because the COTS binary's behaviour cannot be fully verified, we assume
+#   it may be compromised. The blast radius is reduced to: answering the
+#   backend on one port, and reaching the licence server via the inspecting
+#   proxy where the exact vendor FQDN is allow-listed and traffic is logged
+#   (Hubble + proxy logs provide the audit trail required by the
+#   compensating-control acceptance criteria).
+# =============================================================================
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: cots-vendor-policy
+  namespace: cots-vendor
+  labels:
+    app.kubernetes.io/part-of: zero-trust-baseline
+    security.gov.programme/control: compensating-control-1
+  annotations:
+    security.gov.programme/control-id: "Compensating Control 1 (COTS isolation); K8S-015, K8S-016"
+    security.gov.programme/design-ref: "zero-trust-design.md#4-cots-vendor-isolation"
+    security.gov.programme/rationale: >-
+      The COTS vendor container is treated as untrusted. Ingress only from
+      citizen-backend on TCP/8443; egress only to the egress proxy on TCP/443
+      for licence validation, plus cluster DNS. Everything else is denied to
+      contain a potentially compromised vendor binary.
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: cots-vendor   # Vendor workload pods
+  ingress:
+    # --- Ingress: citizen-backend identity ONLY -----------------------------
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: citizen-backend
+            app.kubernetes.io/tier: backend
+      toPorts:
+        - ports:
+            - port: "8443"
+              protocol: TCP
+  egress:
+    # --- Egress: DNS to kube-dns, restricted to the licence FQDN ------------
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+          rules:
+            dns:
+              # Only the vendor licence endpoint may be resolved (L7 DNS
+              # enforcement, K8S-016). Replace with the actual vendor FQDN.
+              - matchName: "license.vendor.example.com"
+              # Internal cluster names needed to reach the proxy service:
+              - matchPattern: "*.egress-proxy.svc.cluster.local"
+    # --- Egress: licence validation via egress proxy ONLY -------------------
+    # No direct internet path exists; the proxy pins the vendor licence FQDN
+    # and records all requests (compensating Control 1 audit evidence).
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: egress-proxy
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+  # No other rules: all other ingress and egress denied. Combined with the
+  # default-deny-all.yaml baseline this satisfies Compensating Control 1.

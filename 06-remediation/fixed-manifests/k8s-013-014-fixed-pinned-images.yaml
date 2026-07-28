@@ -1,0 +1,40 @@
+# =============================================================================
+# FIX: K8S-013 / K8S-014 — unpinned images (:latest / no tag)
+# -----------------------------------------------------------------------------
+# BEFORE (vulnerable):
+#   K8S-013: image: citizen/frontend:latest      (mutable — silently changes)
+#   K8S-014: image: nginx                        (no tag => implicit :latest,
+#            pulled from Docker Hub, no provenance, tag can be repointed)
+#
+# AFTER (fixed):
+#   - All images referenced by immutable sha256 digest from the private,
+#     signature-verified registry. A tag is kept alongside for readability
+#     but the DIGEST is what the runtime resolves.
+#   - imagePullPolicy: IfNotPresent is safe with digests (content-addressed).
+#   - Digests are updated by CI after cosign sign + trivy gate pass.
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: citizen-frontend
+  namespace: citizen-frontend
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: citizen-frontend
+  template:
+    metadata:
+      labels:
+        app: citizen-frontend
+    spec:
+      containers:
+        - name: frontend
+          # K8S-013 fixed: tag + immutable digest
+          image: registry.example.gov.uk/citizen/frontend:1.8.3@sha256:9f2c1a7e4b8d0c3f6a5e2d1b8c7f4a3e6d9b0c1f2a3e4d5b6c7f8a9e0d1b2c3f
+          imagePullPolicy: IfNotPresent
+        - name: nginx-sidecar
+          # K8S-014 fixed: was bare "nginx" from Docker Hub; now mirrored
+          # into the private registry and pinned by digest
+          image: registry.example.gov.uk/mirror/nginx:1.27.0-alpine@sha256:a45ee5d042aaa9e81e013daba353b71fd53980f6d2fb8bec45f0b1b5e181bfff
+          imagePullPolicy: IfNotPresent

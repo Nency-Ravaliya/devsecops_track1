@@ -1,0 +1,102 @@
+# =============================================================================
+# Kyverno Admission Control — Audit Report Example
+# Evidence of Kyverno enforcement for admission policies.
+#
+# Shows expected audit report from Kyverno after deployment of
+# ClusterPolicies for Pod Security Standards, COTS restrictions, etc.
+# =============================================================================
+
+# 1. Policy Reports Summary (cluster-wide)
+
+$ kubectl get policyreports.wgpolicyk8s.io --all-namespaces
+
+NAMESPACE          NAME                           PASS   FAIL   WARN   ERROR   SKIP   AGE
+citizen-frontend   policy-report-cfr-frontend      12     0      2      0       1      3d
+citizen-backend    policy-report-cbk-backend       8      0      1      0       0      3d
+cots-vendor        policy-report-cots             3       0      0      0       0      1d
+kube-system        policy-report-kube-system       5      0      3      0       10     7d
+default            policy-report-default           2      1      1      0       0      3d
+
+# 2. Detailed Report for citizen-frontend namespace
+
+$ kubectl get policyreport policy-report-cfr-frontend -n citizen-frontend -o json | jq '.results[] | {policy: .policy, result: .result, resource: .resources[0].name, message: .message}'
+
+{
+  "policy": "pod-security-restricted",
+  "result": "pass",
+  "resource": "frontend-deploy-7f8c9b-xk2mv",
+  "message": "Pod citizen-frontend/frontend-deploy-7f8c9b-xk2mv satisfies pod-security-restricted policy"
+}
+{
+  "policy": "verify-image-signatures",
+  "result": "pass",
+  "resource": "frontend-deploy-7f8c9b-xk2mv",
+  "message": "Image signature verified: registry.example.com/frontend@sha256:a1b2c3... matches Cosign signature from KMS key"
+}
+{
+  "policy": "require-resource-limits",
+  "result": "warn",
+  "resource": "frontend-deploy-7f8c9b-xk2mv",
+  "message": "Container 'web' has no resource limits defined. Set requests and limits."
+}
+{
+  "policy": "deny-default-serviceaccount",
+  "result": "pass",
+  "resource": "frontend-deploy-7f8c9b-xk2mv",
+  "message": "Pod uses explicit ServiceAccount 'frontend-sa'"
+}
+
+# 3. COTS Vendor Policy Report
+
+$ kubectl get policyreport policy-report-cots -n cots-vendor -o json | jq '.results[] | {policy: .policy, result: .result, message: .message}'
+
+{
+  "policy": "cots-namespace-restrictions",
+  "result": "pass",
+  "message": "COTS image matches approved digest and restricted to cots-vendor namespace"
+}
+{
+  "policy": "deny-nodeport",
+  "result": "pass",
+  "message": "No NodePort services found in cots-vendor namespace"
+}
+{
+  "policy": "pod-security-restricted",
+  "result": "skip",
+  "message": "COTS namespace exempted from pod-security-restricted due to compensating controls (see 06-remediation/compensating-controls.md)"
+}
+
+# 4. Failed Policy (simulated — default namespace with default SA)
+
+$ kubectl get policyreport policy-report-default -n default -o json | jq '.results[] | {policy: .policy, result: .result, resource: .resources[0].name, message: .message}'
+
+{
+  "policy": "deny-default-serviceaccount",
+  "result": "fail",
+  "resource": "test-pod-from-default-sa",
+  "message": "Pod uses default ServiceAccount. Create a dedicated ServiceAccount for this workload (K8S-003)."
+}
+{
+  "policy": "pod-security-restricted",
+  "result": "pass",
+  "resource": "test-pod-from-default-sa",
+  "message": "Pod satisfies pod-security-restricted baseline"
+}
+{
+  "policy": "require-resource-limits",
+  "result": "warn",
+  "resource": "test-pod-from-default-sa",
+  "message": "Container 'app' has no resource limits. Set requests and limits (K8S-024)."
+}
+
+# 5. ClusterPolicy Status
+
+$ kubectl get clusterpolicy
+
+NAME                           BACKGROUND   VALIDATE ACTION   READY   AGE
+pod-security-restricted        true         Enforce           True    7d
+verify-image-signatures        false        Enforce           True    7d
+deny-nodeport                  true         Enforce           True    7d
+cots-namespace-restrictions    true         Enforce           True    7d
+require-resource-limits        true         Audit             True    7d
+deny-default-serviceaccount    true         Enforce           True    5d

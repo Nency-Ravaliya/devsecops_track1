@@ -1,0 +1,136 @@
+# =============================================================================
+# falco-exceptions.yaml
+# Falco 0.38.x rule exceptions for known-safe patterns (tuning, NOT suppression)
+#
+# DevSecOps Assessment - Track 1 - Module 3 (Runtime Security)
+# See: 03-runtime-security/runtime-detection-ir-plan.md, section 2.5
+#
+# Governance:
+#   - Exceptions are version-controlled in the platform-policies repo (Module 2)
+#     and require security-team PR approval.
+#   - Each exception documents WHY the behaviour is safe and the compensating
+#     controls in place. Review cadence: quarterly, or on workload change.
+#   - We use Falco's `exceptions` mechanism (append to existing rules) rather
+#     than disabling rules — detection stays live for all other workloads.
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: falco-exceptions
+  namespace: falco-system
+  labels:
+    app.kubernetes.io/name: falco
+    app.kubernetes.io/part-of: runtime-security
+    falco.org/rules: exceptions
+data:
+  falco-exceptions.yaml: |
+    # =========================================================================
+    # Exception 1: kube-bench CIS scan jobs accessing host paths
+    # -------------------------------------------------------------------------
+    # kube-bench (security-scanning namespace, Module 1 evidence collection)
+    # legitimately reads kubelet/etcd config files on the host. Without this
+    # exception it trips "Container Escape Indicators" and sensitive-file rules.
+    # Compensating controls: runs as short-lived Job, read-only hostPath
+    # mounts, image pinned by digest from approved registry, namespace has
+    # restrictive NetworkPolicy.
+    # =========================================================================
+    - rule: Container Escape Indicators
+      append: true
+      exceptions:
+        - name: kube_bench_host_config_read
+          fields: [k8s.ns.name, container.image.repository]
+          comps: [=, =]
+          values:
+            - [security-scanning, docker.io/aquasec/kube-bench]
+
+    - rule: Kubernetes Secrets from Unapproved Path
+      append: true
+      exceptions:
+        - name: kube_bench_sa_token
+          fields: [k8s.ns.name, k8s.pod.name]
+          comps: [=, startswith]
+          values:
+            - [security-scanning, kube-bench]
+
+    # =========================================================================
+    # Exception 2: COTS vendor container running as root
+    # -------------------------------------------------------------------------
+    # The document-processing COTS product (vendor: contracted, no source
+    # access) requires UID 0 at start-up; vendor roadmap has non-root support
+    # in their next major release (tracked as risk acceptance RA-2026-014,
+    # expires on vendor upgrade or 2026-12-31, whichever first).
+    # Compensating controls: dedicated namespace `cots-docproc` with
+    # deny-all-egress NetworkPolicy, readOnlyRootFilesystem, all capabilities
+    # dropped, seccomp RuntimeDefault, image digest-pinned.
+    # Related finding: K8S-021 (Pod Running as Root).
+    # =========================================================================
+    - rule: Pod Running as Root
+      append: true
+      exceptions:
+        - name: cots_docproc_vendor_root
+          fields: [k8s.ns.name, container.image.repository]
+          comps: [=, =]
+          values:
+            - [cots-docproc, 123456789012.dkr.ecr.eu-west-2.amazonaws.com/vendor/docproc]
+
+    # =========================================================================
+    # Exception 3: Falco itself needing SYS_PTRACE / host proc access
+    # -------------------------------------------------------------------------
+    # The Falco DaemonSet reads /host/proc and holds SYS_PTRACE + SYS_ADMIN
+    # (see falco-daemonset.yaml). Its own behaviour would otherwise self-trip
+    # escape-indicator and secrets rules. Scoped tightly to the falco-system
+    # namespace and the official falcosecurity image.
+    # =========================================================================
+    - rule: Container Escape Indicators
+      append: true
+      exceptions:
+        - name: falco_self_hostproc
+          fields: [k8s.ns.name, container.image.repository]
+          comps: [=, =]
+          values:
+            - [falco-system, falcosecurity/falco]
+
+    - rule: Kubernetes Secrets from Unapproved Path
+      append: true
+      exceptions:
+        - name: falco_self_sa_token
+          fields: [k8s.ns.name, container.image.repository]
+          comps: [=, in]
+          values:
+            - [falco-system, [falcosecurity/falco, falcosecurity/falcosidekick]]
+
+    - rule: Pod Running as Root
+      append: true
+      exceptions:
+        - name: falco_self_root
+          fields: [k8s.ns.name, container.image.repository]
+          comps: [=, =]
+          values:
+            - [falco-system, falcosecurity/falco]
+
+    # =========================================================================
+    # Exception 4: Kyverno admission controller operations
+    # -------------------------------------------------------------------------
+    # Kyverno (Module 2 policy engine) legitimately watches/updates RBAC and
+    # reads its own service-account token to call the API server; its
+    # background controller generates resources (e.g. default NetworkPolicies)
+    # which would trip the RBAC rule. Scoped to the kyverno namespace and the
+    # official kyverno images only.
+    # =========================================================================
+    - rule: K8S RBAC ClusterRoleBinding Created
+      append: true
+      exceptions:
+        - name: kyverno_admission_controller
+          fields: [k8s.ns.name, container.image.repository]
+          comps: [=, startswith]
+          values:
+            - [kyverno, ghcr.io/kyverno]
+
+    - rule: Kubernetes Secrets from Unapproved Path
+      append: true
+      exceptions:
+        - name: kyverno_sa_token
+          fields: [k8s.ns.name, container.image.repository]
+          comps: [=, startswith]
+          values:
+            - [kyverno, ghcr.io/kyverno]

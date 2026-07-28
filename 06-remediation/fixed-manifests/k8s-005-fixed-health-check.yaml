@@ -1,0 +1,62 @@
+# =============================================================================
+# FIX: K8S-005 — health-check deployment container escape vectors
+# -----------------------------------------------------------------------------
+# BEFORE (vulnerable):
+#   - securityContext.privileged: true (full host device/kernel access)
+#   - hostPath mounts of /var/run/docker.sock and /run/containerd/containerd.sock
+#     (trivial container escape: any code in the pod could control the host
+#     container runtime and spawn privileged containers on the node)
+#
+# AFTER (fixed):
+#   - privileged removed, all capabilities dropped, no privilege escalation
+#   - Docker/containerd socket mounts REMOVED — health checks are performed
+#     over HTTP against service endpoints, not by talking to the runtime
+#   - runAsNonRoot, seccomp RuntimeDefault, readOnlyRootFilesystem
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: health-check
+  namespace: platform-ops
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: health-check
+  template:
+    metadata:
+      labels:
+        app: health-check
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: health-check
+          image: registry.example.gov.uk/platform/health-check@sha256:1c4d7a2b9e0f3c6d5a8b1e4f7c0d3a6b9e2f5c8d1a4b7e0f3c6d9a2b5e8f1c4d
+          # NO privileged flag, NO docker.sock / containerd.sock mounts (K8S-005)
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - containerPort: 8080
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

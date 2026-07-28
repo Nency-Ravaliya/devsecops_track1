@@ -1,0 +1,49 @@
+# =============================================================================
+# CI Gate Output Evidence — Conftest RBAC Policy Scan
+# Demonstrates pipeline behavior for K8S-001 (trigger incident pattern)
+#
+# This is the expected CI output when the conftest-k8s-rbac gate runs
+# against the vulnerable kubernetes-goat manifests.
+# =============================================================================
+
+$ conftest test --policy platform-policies/policy/k8s-rbac.rego \
+    reference-target/scenarios/insecure-rbac/setup.yaml
+
+FAIL - reference-target/scenarios/insecure-rbac/setup.yaml - main - CRITICAL [K8S-001]: ClusterRoleBinding 'superadmin' binds cluster-admin to non-system subject 'ServiceAccount/superadmin'. This is the trigger incident pattern.
+
+1 test, 0 passed, 0 warnings, 1 failure
+
+=== CRITICAL/HIGH RBAC VIOLATION DETECTED ===
+This pipeline would have blocked K8S-001 (cluster-admin to CI SA)
+Review the policy violations above and fix before merging.
+
+Exit code: 1
+
+---
+
+$ conftest test --policy platform-policies/policy/k8s-rbac.rego \
+    reference-target/infrastructure/helm-tiller/pwnchart/templates/clusterrole.yaml
+
+FAIL - reference-target/infrastructure/helm-tiller/pwnchart/templates/clusterrole.yaml - main - CRITICAL [K8S-002]: ClusterRole 'all-your-base' uses wildcard (*) on apiGroups, resources, AND verbs. This is cluster-admin-equivalent.
+
+1 test, 0 passed, 0 warnings, 1 failure
+
+---
+
+$ conftest test --policy platform-policies/policy/k8s-rbac.rego \
+    reference-target/infrastructure/helm-tiller/pwnchart/templates/clusterrolebinding.yaml
+
+FAIL - reference-target/infrastructure/helm-tiller/pwnchart/templates/clusterrolebinding.yaml - main - CRITICAL [K8S-003]: ClusterRoleBinding 'belong-to-us' binds ClusterRole 'all-your-base' to default ServiceAccount in namespace 'default'. Any pod without explicit SA inherits this.
+
+1 test, 0 passed, 0 warnings, 1 failure
+
+---
+
+# AFTER REMEDIATION: Testing the fixed manifest
+
+$ conftest test --policy platform-policies/policy/k8s-rbac.rego \
+    06-remediation/fixed-manifests/k8s-001-fixed-superadmin.yaml
+
+0 tests, 0 passed, 0 warnings, 0 failures
+
+Exit code: 0  ✅ Policy passes — fixed manifest is compliant.

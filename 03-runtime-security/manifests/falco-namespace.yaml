@@ -1,0 +1,39 @@
+# =============================================================================
+# falco-namespace.yaml
+# Namespace for the Falco runtime detection stack (Falco 0.38.x + falcosidekick)
+#
+# DevSecOps Assessment - Track 1 - Module 3 (Runtime Security)
+# See: 03-runtime-security/runtime-detection-ir-plan.md
+#
+# Security posture notes:
+#   - Pod Security Admission set to "privileged" enforcement is NOT used here.
+#     Falco 0.36+ runs unprivileged with a narrow capability set, so we can
+#     enforce "baseline" audit/warn while allowing the specific capabilities
+#     via an exemption in the PSA configuration (documented in Module 2).
+#   - Labelled for NetworkPolicy targeting (K8S-015 remediation) and for
+#     Kyverno policy exclusions (see falco-exceptions.yaml).
+# =============================================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: falco-system
+  labels:
+    app.kubernetes.io/name: falco
+    app.kubernetes.io/part-of: runtime-security
+    app.kubernetes.io/managed-by: platform-security-team
+    # Pod Security Admission: Falco needs SYS_ADMIN/SYS_PTRACE (not privileged),
+    # which exceeds "baseline". Enforce privileged at namespace level but audit
+    # against baseline so drift is still visible in audit logs.
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/audit: baseline
+    pod-security.kubernetes.io/warn: baseline
+    # Programme metadata
+    programme.gov/environment: production
+    programme.gov/data-classification: official
+    programme.gov/module: "03-runtime-security"
+  annotations:
+    programme.gov/owner: platform-security-team
+    programme.gov/description: >-
+      Runtime threat detection namespace. Hosts the Falco DaemonSet (eBPF
+      driver, unprivileged) and falcosidekick alert router. Findings addressed:
+      K8S-001..006, K8S-009/010, K8S-013/014, K8S-021, K8S-022.

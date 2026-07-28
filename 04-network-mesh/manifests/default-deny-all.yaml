@@ -1,0 +1,88 @@
+# =============================================================================
+# default-deny-all.yaml
+# Standard Kubernetes NetworkPolicy: default-deny ingress AND egress
+# -----------------------------------------------------------------------------
+# Control mapping : K8S-015 (Default-deny network posture per namespace)
+# Design reference: zero-trust-design.md — Section 3.1 "Default-Deny Baseline"
+#
+# Security rationale:
+#   Zero-trust requires that no pod may send or receive traffic unless an
+#   explicit allow policy exists. These policies select ALL pods in each
+#   namespace (empty podSelector) and declare both policyTypes with no
+#   ingress/egress rules, which denies everything by default. Subsequent
+#   CiliumNetworkPolicies (see cilium-*.yaml in this directory) layer the
+#   explicit allows on top.
+#
+#   Using the standard networking.k8s.io API here (rather than Cilium CRDs)
+#   guarantees the baseline survives even if the Cilium CRD policies are
+#   accidentally deleted, and remains portable across clusters/CNIs in the
+#   multi-cloud programme.
+#
+#   NOTE: default-deny egress also blocks DNS. Every workload namespace MUST
+#   pair this with an explicit kube-dns egress allow (provided in the Cilium
+#   policies) or DNS resolution will fail — this is intentional fail-closed
+#   behaviour per zero-trust-design.md Section 3.2.
+# =============================================================================
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: citizen-frontend
+  labels:
+    app.kubernetes.io/part-of: zero-trust-baseline
+    security.gov.programme/control: k8s-015
+  annotations:
+    security.gov.programme/control-id: "K8S-015"
+    security.gov.programme/design-ref: "zero-trust-design.md#3.1-default-deny-baseline"
+    security.gov.programme/rationale: >-
+      Fail-closed baseline. All ingress and egress denied unless explicitly
+      allowed by a CiliumNetworkPolicy in this namespace.
+spec:
+  podSelector: {}          # Selects ALL pods in the namespace
+  policyTypes:
+    - Ingress
+    - Egress
+  # No ingress/egress rules => deny everything by default
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: citizen-backend
+  labels:
+    app.kubernetes.io/part-of: zero-trust-baseline
+    security.gov.programme/control: k8s-015
+  annotations:
+    security.gov.programme/control-id: "K8S-015"
+    security.gov.programme/design-ref: "zero-trust-design.md#3.1-default-deny-baseline"
+    security.gov.programme/rationale: >-
+      Fail-closed baseline. All ingress and egress denied unless explicitly
+      allowed by a CiliumNetworkPolicy in this namespace.
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: cots-vendor
+  labels:
+    app.kubernetes.io/part-of: zero-trust-baseline
+    security.gov.programme/control: k8s-015
+  annotations:
+    security.gov.programme/control-id: "K8S-015"
+    security.gov.programme/design-ref: "zero-trust-design.md#3.1-default-deny-baseline"
+    security.gov.programme/rationale: >-
+      Fail-closed baseline for the untrusted COTS vendor workload. This is the
+      foundation for compensating Control 1 (network micro-segmentation of the
+      vendor black-box container). All ingress and egress denied unless
+      explicitly allowed.
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress

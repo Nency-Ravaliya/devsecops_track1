@@ -1,0 +1,106 @@
+{
+  "$schema": "http://cyclonedx.org/schema/bom-1.5.schema.json",
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "serialNumber": "urn:uuid:3e671687-395b-41f5-a30f-a58921a69b79",
+  "version": 1,
+  "metadata": {
+    "timestamp": "2026-07-28T09:14:32Z",
+    "tools": [
+      {
+        "vendor": "anchore",
+        "name": "syft",
+        "version": "1.18.1"
+      }
+    ],
+    "component": {
+      "bom-ref": "pkg:oci/citizen-frontend@sha256:9f2c1a7e4b8d0c3f6a5e2d1b8c7f4a3e6d9b0c1f2a3e4d5b6c7f8a9e0d1b2c3f",
+      "type": "container",
+      "name": "registry.example.gov.uk/citizen/frontend",
+      "version": "sha256:9f2c1a7e4b8d0c3f6a5e2d1b8c7f4a3e6d9b0c1f2a3e4d5b6c7f8a9e0d1b2c3f"
+    }
+  },
+  "components": [
+    {
+      "bom-ref": "pkg:npm/express@4.19.2",
+      "type": "library",
+      "name": "express",
+      "version": "4.19.2",
+      "purl": "pkg:npm/express@4.19.2",
+      "licenses": [{ "license": { "id": "MIT" } }]
+    },
+    {
+      "bom-ref": "pkg:npm/axios@1.7.4",
+      "type": "library",
+      "name": "axios",
+      "version": "1.7.4",
+      "purl": "pkg:npm/axios@1.7.4",
+      "licenses": [{ "license": { "id": "MIT" } }]
+    },
+    {
+      "bom-ref": "pkg:npm/jsonwebtoken@9.0.2",
+      "type": "library",
+      "name": "jsonwebtoken",
+      "version": "9.0.2",
+      "purl": "pkg:npm/jsonwebtoken@9.0.2",
+      "licenses": [{ "license": { "id": "MIT" } }]
+    },
+    {
+      "bom-ref": "pkg:npm/pg@8.12.0",
+      "type": "library",
+      "name": "pg",
+      "version": "8.12.0",
+      "purl": "pkg:npm/pg@8.12.0",
+      "licenses": [{ "license": { "id": "MIT" } }]
+    },
+    {
+      "bom-ref": "pkg:npm/helmet@7.1.0",
+      "type": "library",
+      "name": "helmet",
+      "version": "7.1.0",
+      "purl": "pkg:npm/helmet@7.1.0",
+      "licenses": [{ "license": { "id": "MIT" } }]
+    },
+    {
+      "bom-ref": "pkg:npm/lodash@4.17.21",
+      "type": "library",
+      "name": "lodash",
+      "version": "4.17.21",
+      "purl": "pkg:npm/lodash@4.17.21",
+      "licenses": [{ "license": { "id": "MIT" } }]
+    },
+    {
+      "bom-ref": "pkg:npm/pino@9.3.1",
+      "type": "library",
+      "name": "pino",
+      "version": "9.3.1",
+      "purl": "pkg:npm/pino@9.3.1",
+      "licenses": [{ "license": { "id": "MIT" } }]
+    },
+    {
+      "bom-ref": "pkg:apk/alpine/openssl@3.3.1-r3?arch=x86_64&distro=alpine-3.20",
+      "type": "library",
+      "name": "openssl",
+      "version": "3.3.1-r3",
+      "purl": "pkg:apk/alpine/openssl@3.3.1-r3?arch=x86_64&distro=alpine-3.20",
+      "licenses": [{ "license": { "id": "Apache-2.0" } }]
+    }
+  ],
+  "dependencies": [
+    {
+      "ref": "pkg:oci/citizen-frontend@sha256:9f2c1a7e4b8d0c3f6a5e2d1b8c7f4a3e6d9b0c1f2a3e4d5b6c7f8a9e0d1b2c3f",
+      "dependsOn": [
+        "pkg:npm/express@4.19.2",
+        "pkg:npm/axios@1.7.4",
+        "pkg:npm/jsonwebtoken@9.0.2",
+        "pkg:npm/pg@8.12.0",
+        "pkg:npm/helmet@7.1.0",
+        "pkg:npm/pino@9.3.1"
+      ]
+    },
+    {
+      "ref": "pkg:npm/express@4.19.2",
+      "dependsOn": ["pkg:npm/lodash@4.17.21"]
+    }
+  ]
+}

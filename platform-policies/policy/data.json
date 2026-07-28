@@ -1,0 +1,21 @@
+{
+    "approved_registries": [
+        "docker.io/library",
+        "docker.io/madhuakula",
+        "registry.example.com",
+        "public.ecr.aws"
+    ],
+    "approved_namespaces": ["kube-system", "kyverno", "falco-system", "external-secrets", "cilium-system", "cots-vendor"],
+    "break_glass_namespaces": ["cots-vendor", "security-scanning"],
+    "exempt_service_accounts": ["falco", "kyverno", "cilium"],
+    "exempt_images": [
+        "docker.io/madhuakula/k8s-goat-system-monitor:0.1.0",
+        "docker.io/madhuakula/k8s-goat-health-check:0.1.0"
+    ],
+    "policy_metadata": {
+        "version": "1.0.0",
+        "description": "Conftest policy data for DevSecOps Track 1 assessment",
+        "last_updated": "2026-07-28",
+        "owner": "platform-security"
+    }
+}

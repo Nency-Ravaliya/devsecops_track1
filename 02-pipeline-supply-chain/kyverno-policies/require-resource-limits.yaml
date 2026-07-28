@@ -1,0 +1,67 @@
+# =============================================================================
+# Kyverno ClusterPolicy: require-resource-limits
+# -----------------------------------------------------------------------------
+# Purpose:   Require CPU/memory requests and limits on all containers.
+#            Missing requests undermine scheduling and bin-packing; missing
+#            limits allow noisy-neighbour resource exhaustion and DoS.
+# Findings:  K8S-023 (no resource requests), K8S-024 (no resource limits)
+# Severity:  Medium -> validationFailureAction: Audit
+#            (Move to Enforce after a remediation window once PolicyReport
+#            violations reach zero.)
+# =============================================================================
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-resource-limits
+  labels:
+    app.kubernetes.io/part-of: devsecops-assessment-track1
+    app.kubernetes.io/component: workload-hygiene
+    policy.assessment/module: "02-pipeline-supply-chain"
+    policy.assessment/severity: medium
+  annotations:
+    policies.kyverno.io/title: Require Resource Requests and Limits
+    policies.kyverno.io/category: Resource Management
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/minversion: 1.11.0
+    assessment.findings/ids: "K8S-023,K8S-024"
+    policies.kyverno.io/description: >-
+      Audits (and later enforces) that every container declares CPU and memory
+      requests and memory/CPU limits, preventing unbounded resource
+      consumption and improving scheduling accuracy.
+spec:
+  validationFailureAction: Audit   # Medium severity: audit first, enforce later
+  background: true                  # surface existing violations in PolicyReports
+  failurePolicy: Ignore             # do not block admission on webhook errors while in Audit
+  rules:
+    - name: require-requests-and-limits
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+      exclude:
+        any:
+          - resources:
+              namespaces: [kube-system, kyverno]
+      validate:
+        message: >-
+          All containers must declare CPU and memory requests and limits
+          (K8S-023, K8S-024).
+        pattern:
+          spec:
+            =(initContainers):
+              - resources:
+                  requests:
+                    cpu: "?*"
+                    memory: "?*"
+                  limits:
+                    cpu: "?*"
+                    memory: "?*"
+            containers:
+              - resources:
+                  requests:
+                    cpu: "?*"
+                    memory: "?*"
+                  limits:
+                    cpu: "?*"
+                    memory: "?*"

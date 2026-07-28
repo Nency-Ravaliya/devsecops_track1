@@ -1,0 +1,116 @@
+# =============================================================================
+# Kyverno ClusterPolicy: cots-namespace-restrictions
+# -----------------------------------------------------------------------------
+# Purpose:   Compensating controls for the COTS vendor workload, which cannot
+#            be modified to meet the full Restricted baseline. Three controls:
+#              1. The COTS image may only run in the dedicated `cots-vendor`
+#                 namespace (containment).
+#              2. Inside `cots-vendor`, only the approved image, pinned by
+#                 digest, is admitted (no tag drift / vendor push updates).
+#              3. The COTS ServiceAccount cannot create RoleBindings or
+#                 ClusterRoleBindings (privilege-escalation guard).
+# Findings:  Compensating controls documentation (see
+#            02-pipeline-supply-chain compensating-controls doc); relates to
+#            Module 1 COTS risk acceptance.
+# Severity:  High -> validationFailureAction: Enforce
+# Note:      Replace ACCOUNT and the digest with the approved values from the
+#            vendor onboarding record.
+# =============================================================================
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: cots-namespace-restrictions
+  labels:
+    app.kubernetes.io/part-of: devsecops-assessment-track1
+    app.kubernetes.io/component: cots-compensating-controls
+    policy.assessment/module: "02-pipeline-supply-chain"
+    policy.assessment/severity: high
+  annotations:
+    policies.kyverno.io/title: COTS Vendor Workload Restrictions
+    policies.kyverno.io/category: Compensating Controls
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod,RoleBinding,ClusterRoleBinding
+    policies.kyverno.io/minversion: 1.11.0
+    assessment.findings/ids: "COTS-CC-01,COTS-CC-02,COTS-CC-03"
+    policies.kyverno.io/description: >-
+      Contains the COTS vendor workload to the cots-vendor namespace, pins it
+      to the approved image digest, and prevents its ServiceAccount from
+      granting RBAC permissions.
+spec:
+  validationFailureAction: Enforce
+  background: true
+  failurePolicy: Fail
+  rules:
+    # -------------------------------------------------------------------------
+    # Control 1: COTS image may only run in the cots-vendor namespace
+    # -------------------------------------------------------------------------
+    - name: restrict-cots-image-to-namespace
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+      exclude:
+        any:
+          - resources:
+              namespaces: [cots-vendor]
+      validate:
+        message: >-
+          The COTS vendor image may only be deployed in the 'cots-vendor'
+          namespace (compensating control COTS-CC-01).
+        foreach:
+          - list: "request.object.spec.[initContainers, containers][]"
+            deny:
+              conditions:
+                any:
+                  - key: "{{ element.image }}"
+                    operator: Equals
+                    value: "ACCOUNT.dkr.ecr.eu-west-2.amazonaws.com/cots-vendor/*"
+
+    # -------------------------------------------------------------------------
+    # Control 2: cots-vendor namespace admits only the approved image digest
+    # -------------------------------------------------------------------------
+    - name: allow-only-approved-cots-digest
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces: [cots-vendor]
+      validate:
+        message: >-
+          Only the approved COTS image, pinned by digest, is permitted in the
+          'cots-vendor' namespace (compensating control COTS-CC-02). Tags are
+          not accepted.
+        foreach:
+          - list: "request.object.spec.[initContainers, containers][]"
+            deny:
+              conditions:
+                all:
+                  - key: "{{ element.image }}"
+                    operator: NotEquals
+                    # Approved image, pinned by digest (from vendor onboarding record)
+                    value: "ACCOUNT.dkr.ecr.eu-west-2.amazonaws.com/cots-vendor/app@sha256:REPLACE_WITH_APPROVED_DIGEST"
+
+    # -------------------------------------------------------------------------
+    # Control 3: COTS ServiceAccount cannot create RoleBindings or
+    #            ClusterRoleBindings (blocks RBAC self-escalation)
+    # -------------------------------------------------------------------------
+    - name: block-cots-sa-rbac-grants
+      match:
+        any:
+          - resources:
+              kinds:
+                - RoleBinding
+                - ClusterRoleBinding
+              operations:
+                - CREATE
+                - UPDATE
+            subjects:
+              - kind: ServiceAccount
+                name: cots-vendor-sa
+                namespace: cots-vendor
+      validate:
+        message: >-
+          The COTS ServiceAccount (cots-vendor/cots-vendor-sa) is not
+          permitted to create or modify RoleBindings or ClusterRoleBindings
+          (compensating control COTS-CC-03).
+        deny: {}

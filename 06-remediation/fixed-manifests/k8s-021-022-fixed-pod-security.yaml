@@ -1,0 +1,61 @@
+# =============================================================================
+# FIX: K8S-021 / K8S-022 — missing pod securityContext hardening
+# -----------------------------------------------------------------------------
+# BEFORE (vulnerable):
+#   K8S-021: containers ran as root (no runAsNonRoot/runAsUser), writable
+#            root filesystem, default capability set retained
+#   K8S-022: no seccompProfile — all syscalls allowed (seccomp Unconfined)
+#
+# AFTER (fixed) — template meeting the Pod Security "restricted" profile:
+#   - runAsNonRoot + explicit non-root UID/GID
+#   - seccompProfile: RuntimeDefault (K8S-022)
+#   - capabilities: drop ALL (add back only NET_BIND_SERVICE if ever needed)
+#   - allowPrivilegeEscalation: false, readOnlyRootFilesystem: true
+#   - writable paths provided via emptyDir where the app needs scratch space
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: citizen-backend
+  namespace: citizen-backend
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: citizen-backend
+  template:
+    metadata:
+      labels:
+        app: citizen-backend
+    spec:
+      automountServiceAccountToken: false
+      securityContext:                       # pod-level (K8S-021/022)
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault               # K8S-022
+      containers:
+        - name: backend
+          image: registry.example.gov.uk/citizen/backend@sha256:7d3f9a1c5e8b2f4d6a0c3e9b1f5d8a2c4e7b0d3f6a9c2e5b8d1f4a7c0e3b6d9f
+          securityContext:                   # container-level (K8S-021)
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - containerPort: 8080            # >1024, no NET_BIND_SERVICE needed
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

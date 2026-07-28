@@ -1,0 +1,238 @@
+# =============================================================================
+# Kyverno ClusterPolicy: pod-security-restricted
+# -----------------------------------------------------------------------------
+# Purpose:   Enforce the Pod Security Standards (PSS) "Restricted" profile:
+#            - deny privileged containers            (K8S-004)
+#            - deny host namespaces (PID/IPC/net)    (K8S-005)
+#            - deny hostPath mounts of / and
+#              container runtime sockets             (K8S-006)
+#            - require runAsNonRoot                  (K8S-021)
+#            - drop ALL capabilities, require
+#              seccompProfile RuntimeDefault         (K8S-022)
+# Findings:  K8S-004, K8S-005, K8S-006, K8S-021, K8S-022
+# Severity:  Critical/High -> validationFailureAction: Enforce
+# =============================================================================
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: pod-security-restricted
+  labels:
+    app.kubernetes.io/part-of: devsecops-assessment-track1
+    app.kubernetes.io/component: workload-hardening
+    policy.assessment/module: "02-pipeline-supply-chain"
+    policy.assessment/severity: critical
+  annotations:
+    policies.kyverno.io/title: Pod Security Standards - Restricted
+    policies.kyverno.io/category: Pod Security Standards (Restricted)
+    policies.kyverno.io/severity: critical
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/minversion: 1.11.0
+    assessment.findings/ids: "K8S-004,K8S-005,K8S-006,K8S-021,K8S-022"
+    policies.kyverno.io/description: >-
+      Enforces the PSS Restricted profile across workload namespaces: no
+      privileged containers, no host namespaces, no sensitive hostPath mounts,
+      non-root execution, all capabilities dropped, and RuntimeDefault seccomp.
+spec:
+  validationFailureAction: Enforce
+  background: true
+  failurePolicy: Fail
+  rules:
+    # -------------------------------------------------------------------------
+    # K8S-004: Deny privileged containers
+    # -------------------------------------------------------------------------
+    - name: deny-privileged-containers
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+      exclude:
+        any:
+          - resources:
+              namespaces: [kube-system, kyverno]
+      validate:
+        message: >-
+          Privileged containers are prohibited (K8S-004). Set
+          securityContext.privileged=false (or omit it).
+        pattern:
+          spec:
+            =(ephemeralContainers):
+              - =(securityContext):
+                  =(privileged): "false"
+            =(initContainers):
+              - =(securityContext):
+                  =(privileged): "false"
+            containers:
+              - =(securityContext):
+                  =(privileged): "false"
+
+    # -------------------------------------------------------------------------
+    # K8S-005: Deny host namespaces (hostPID, hostIPC, hostNetwork)
+    # -------------------------------------------------------------------------
+    - name: deny-host-namespaces
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+      exclude:
+        any:
+          - resources:
+              namespaces: [kube-system, kyverno]
+      validate:
+        message: >-
+          Sharing host namespaces is prohibited (K8S-005). hostPID, hostIPC
+          and hostNetwork must be false or unset.
+        pattern:
+          spec:
+            =(hostPID): "false"
+            =(hostIPC): "false"
+            =(hostNetwork): "false"
+
+    # -------------------------------------------------------------------------
+    # K8S-006: Deny hostPath mounts of / and container runtime sockets
+    # -------------------------------------------------------------------------
+    - name: deny-sensitive-hostpath
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+      exclude:
+        any:
+          - resources:
+              namespaces: [kube-system, kyverno]
+      validate:
+        message: >-
+          hostPath volumes mounting the host root filesystem or container
+          runtime sockets are prohibited (K8S-006).
+        foreach:
+          - list: "request.object.spec.volumes[]"
+            deny:
+              conditions:
+                any:
+                  - key: "{{ element.hostPath.path || '' }}"
+                    operator: Equals
+                    value: "/"
+                  - key: "{{ element.hostPath.path || '' }}"
+                    operator: AnyIn
+                    value:
+                      - "/var/run/docker.sock"
+                      - "/run/docker.sock"
+                      - "/var/run/containerd/containerd.sock"
+                      - "/run/containerd/containerd.sock"
+                      - "/var/run/crio/crio.sock"
+                      - "/run/crio/crio.sock"
+
+    # -------------------------------------------------------------------------
+    # K8S-021: Require runAsNonRoot
+    # -------------------------------------------------------------------------
+    - name: require-run-as-non-root
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+      exclude:
+        any:
+          - resources:
+              namespaces: [kube-system, kyverno]
+      validate:
+        message: >-
+          Containers must run as non-root (K8S-021). Set
+          securityContext.runAsNonRoot=true at pod or container level.
+        anyPattern:
+          - spec:
+              securityContext:
+                runAsNonRoot: "true"
+              =(ephemeralContainers):
+                - =(securityContext):
+                    =(runAsNonRoot): "true"
+              =(initContainers):
+                - =(securityContext):
+                    =(runAsNonRoot): "true"
+              containers:
+                - =(securityContext):
+                    =(runAsNonRoot): "true"
+          - spec:
+              =(ephemeralContainers):
+                - securityContext:
+                    runAsNonRoot: "true"
+              =(initContainers):
+                - securityContext:
+                    runAsNonRoot: "true"
+              containers:
+                - securityContext:
+                    runAsNonRoot: "true"
+
+    # -------------------------------------------------------------------------
+    # K8S-022 (part 1): Drop ALL capabilities
+    # -------------------------------------------------------------------------
+    - name: require-drop-all-capabilities
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+      exclude:
+        any:
+          - resources:
+              namespaces: [kube-system, kyverno]
+      validate:
+        message: >-
+          Containers must drop ALL capabilities (K8S-022). Set
+          securityContext.capabilities.drop to ["ALL"]. Only NET_BIND_SERVICE
+          may be added back.
+        foreach:
+          - list: "request.object.spec.[ephemeralContainers, initContainers, containers][]"
+            deny:
+              conditions:
+                any:
+                  - key: ALL
+                    operator: AnyNotIn
+                    value: "{{ element.securityContext.capabilities.drop[] || `[]` }}"
+                  - key: "{{ element.securityContext.capabilities.add[] || `[]` }}"
+                    operator: AnyNotIn
+                    value: ["NET_BIND_SERVICE"]
+
+    # -------------------------------------------------------------------------
+    # K8S-022 (part 2): Require seccompProfile RuntimeDefault (or Localhost)
+    # -------------------------------------------------------------------------
+    - name: require-runtime-default-seccomp
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+      exclude:
+        any:
+          - resources:
+              namespaces: [kube-system, kyverno]
+      validate:
+        message: >-
+          A seccomp profile of RuntimeDefault (or Localhost) is required
+          (K8S-022) at pod or container level.
+        anyPattern:
+          - spec:
+              securityContext:
+                seccompProfile:
+                  type: "RuntimeDefault | Localhost"
+              =(ephemeralContainers):
+                - =(securityContext):
+                    =(seccompProfile):
+                      =(type): "RuntimeDefault | Localhost"
+              =(initContainers):
+                - =(securityContext):
+                    =(seccompProfile):
+                      =(type): "RuntimeDefault | Localhost"
+              containers:
+                - =(securityContext):
+                    =(seccompProfile):
+                      =(type): "RuntimeDefault | Localhost"
+          - spec:
+              =(ephemeralContainers):
+                - securityContext:
+                    seccompProfile:
+                      type: "RuntimeDefault | Localhost"
+              =(initContainers):
+                - securityContext:
+                    seccompProfile:
+                      type: "RuntimeDefault | Localhost"
+              containers:
+                - securityContext:
+                    seccompProfile:
+                      type: "RuntimeDefault | Localhost"

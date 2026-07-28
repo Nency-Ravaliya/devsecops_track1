@@ -1,0 +1,92 @@
+# =============================================================================
+# cilium-citizen-frontend.yaml
+# CiliumNetworkPolicy — citizen-frontend namespace (explicit allow-list)
+# -----------------------------------------------------------------------------
+# Control mapping : K8S-015 (default-deny + explicit allows)
+#                   K8S-016 (L4/L7 identity-aware segmentation via Cilium)
+# Design reference: zero-trust-design.md — Section 3.3 "Frontend Tier Policy"
+#
+# Traffic matrix (everything else is denied by the default-deny baseline and
+# by this policy being a full ingress+egress allow-list):
+#   IN : ALB subnets (CIDR)                -> TCP/443  (TLS from load balancer)
+#   OUT: citizen-backend pods              -> TCP/8080 (API calls)
+#   OUT: kube-dns (kube-system)            -> UDP/53, TCP/53 (name resolution)
+#   OUT: egress-proxy namespace            -> TCP/443 (all external HTTPS is
+#        forced through the inspecting egress proxy — no direct internet)
+#
+# Security rationale:
+#   The frontend is internet-facing (behind the ALB) and therefore the most
+#   likely initial compromise point. Restricting its egress to exactly the
+#   backend API, DNS, and the egress proxy prevents lateral movement and
+#   direct data exfiltration if the frontend is compromised.
+# =============================================================================
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: citizen-frontend-policy
+  namespace: citizen-frontend
+  labels:
+    app.kubernetes.io/part-of: zero-trust-baseline
+    security.gov.programme/control: k8s-015-k8s-016
+  annotations:
+    security.gov.programme/control-id: "K8S-015, K8S-016"
+    security.gov.programme/design-ref: "zero-trust-design.md#3.3-frontend-tier-policy"
+    security.gov.programme/rationale: >-
+      Internet-facing tier. Ingress restricted to ALB CIDR on TCP/443 only;
+      egress restricted to backend API, cluster DNS, and the inspecting
+      egress proxy. Prevents lateral movement and direct exfiltration.
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/tier: frontend   # Applies to frontend workload pods
+  ingress:
+    # --- Ingress: ALB only, TLS port only -----------------------------------
+    # The ALB lives in dedicated public subnets; adjust CIDRs to the actual
+    # subnet ranges allocated to the load balancer in each environment.
+    - fromCIDR:
+        - 10.0.10.0/24    # ALB subnet AZ-a
+        - 10.0.11.0/24    # ALB subnet AZ-b
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+  egress:
+    # --- Egress: DNS to kube-dns (required with fail-closed default-deny) ---
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+          rules:
+            dns:
+              # L7 DNS visibility (K8S-016): log/enforce queried names via
+              # Hubble; wildcard now, tighten to explicit FQDN list per
+              # zero-trust-design.md Section 3.6 once traffic is baselined.
+              - matchPattern: "*"
+    # --- Egress: backend API only -------------------------------------------
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: citizen-backend
+            app.kubernetes.io/tier: backend
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+    # --- Egress: forced through egress proxy for any external HTTPS ---------
+    # No direct internet egress from this namespace; the proxy performs TLS
+    # inspection and destination allow-listing (zero-trust-design.md 3.5).
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: egress-proxy
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+  # No other ingress/egress rules: all other traffic is denied (allow-list
+  # semantics of CiliumNetworkPolicy + default-deny-all.yaml baseline).

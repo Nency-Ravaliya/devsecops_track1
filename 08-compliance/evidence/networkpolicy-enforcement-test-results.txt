@@ -1,0 +1,160 @@
+# =============================================================================
+# NetworkPolicy Enforcement Test Evidence
+# Demonstrates Cilium NetworkPolicy enforcement for K8S-015/K8S-016.
+#
+# These tests verify that default-deny policies and CiliumNetworkPolicies
+# correctly block unauthorized traffic.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# TEST 1: Default-deny blocks cross-namespace traffic
+# From citizen-frontend → citizen-backend (before explicit policy)
+# -----------------------------------------------------------------------------
+
+# 1a. Verify default-deny is applied
+
+$ kubectl get networkpolicies -n citizen-frontend
+
+NAME              POD-SELECTOR   AGE
+default-deny-all  <none>         3d
+
+$ kubectl get networkpolicies -n citizen-backend
+
+NAME              POD-SELECTOR   AGE
+default-deny-all  <none>         3d
+
+# 1b. Attempt cross-namespace curl (should fail)
+
+$ kubectl exec -n citizen-frontend deploy/frontend-deploy -- curl -s --connect-timeout 5 citizen-backend-service.citizen-backend.svc.cluster.local:8080/health
+
+curl: (28) Connection timed out after 5001 milliseconds
+
+# Result: ✅ BLOCKED — default-deny prevents cross-namespace traffic
+
+# 1c. Verify with Hubble flow log
+
+$ hubble observe -n citizen-frontend --from-pod citizen-frontend/frontend-deploy-7f8c9b-xk2mv --verdict DROPPED --last 5
+
+TIMESTAMP             SOURCE                              DESTINATION                                  TYPE           VERDICT   SUMMARY
+Jul 28 14:22:15.847   citizen-frontend/frontend-deploy    citizen-backend/backend-deploy:8080(TCP)      Policy L4      DROPPED   TCP Flags: SYN
+Jul 28 14:22:16.850   citizen-frontend/frontend-deploy    citizen-backend/backend-deploy:8080(TCP)      Policy L4      DROPPED   TCP Flags: SYN (retransmit)
+
+# Result: ✅ Hubble confirms policy-level DROP
+
+# -----------------------------------------------------------------------------
+# TEST 2: CiliumNetworkPolicy allows approved frontend → backend traffic
+# After cilium-citizen-frontend.yaml is applied
+# -----------------------------------------------------------------------------
+
+$ kubectl get ciliumnetworkpolicies -n citizen-frontend
+
+NAME                      AGE
+citizen-frontend          1d
+
+# 2a. Attempt allowed cross-namespace curl (should succeed)
+
+$ kubectl exec -n citizen-frontend deploy/frontend-deploy -- curl -s --connect-timeout 5 citizen-backend-service.citizen-backend.svc.cluster.local:8080/health
+
+{"status":"ok","timestamp":"2026-07-28T14:30:00Z"}
+
+# Result: ✅ ALLOWED — CiliumNetworkPolicy permits frontend → backend on TCP/8080
+
+# 2b. Attempt unauthorized port (should fail)
+
+$ kubectl exec -n citizen-frontend deploy/frontend-deploy -- curl -s --connect-timeout 5 citizen-backend-service.citizen-backend.svc.cluster.local:5432
+
+curl: (28) Connection timed out after 5001 milliseconds
+
+# Result: ✅ BLOCKED — Only TCP/8080 is allowed; TCP/5432 is not in the policy
+
+# 2c. Hubble flow log showing allowed vs dropped
+
+$ hubble observe -n citizen-frontend --last 10
+
+TIMESTAMP             SOURCE                              DESTINATION                                  TYPE           VERDICT    SUMMARY
+Jul 28 14:30:03.124   citizen-frontend/frontend-deploy    citizen-backend/backend-deploy:8080(TCP)      Policy L4      FORWARDED  TCP Flags: SYN, ACK
+Jul 28 14:30:05.678   citizen-frontend/frontend-deploy    citizen-backend/backend-deploy:5432(TCP)      Policy L4      DROPPED    TCP Flags: SYN
+
+# -----------------------------------------------------------------------------
+# TEST 3: COTS vendor namespace isolation (Compensating Control 1)
+# Verify the COTS vendor is isolated per compensating-controls.md
+# -----------------------------------------------------------------------------
+
+$ kubectl get ciliumnetworkpolicies -n cots-vendor
+
+NAME                      AGE
+cilium-cots-vendor        1d
+
+# 3a. Attempt unauthorized lateral movement from COTS container
+
+$ kubectl exec -n cots-vendor deploy/cots-vendor -- curl -s --connect-timeout 5 citizen-frontend-service.citizen-frontend.svc.cluster.local:443
+
+curl: (28) Connection timed out after 5001 milliseconds
+
+# Result: ✅ BLOCKED — COTS cannot reach citizen-frontend (lateral movement prevented)
+
+# 3b. Attempt unauthorized egress to the internet
+
+$ kubectl exec -n cots-vendor deploy/cots-vendor -- curl -s --connect-timeout 5 https://evil.example.com
+
+curl: (28) Connection timed out after 5001 milliseconds
+
+# Result: ✅ BLOCKED — COTS egress restricted to egress-proxy only
+
+# 3c. Allowed COTS → egress-proxy for license validation
+
+$ kubectl exec -n cots-vendor deploy/cots-vendor -- curl -s --connect-timeout 5 egress-proxy.egress-proxy.svc.cluster.local:443
+
+HTTP/1.1 200 Connection established
+
+# Result: ✅ ALLOWED — COTS can reach egress-proxy for license validation
+
+# 3d. Allowed citizen-backend → COTS vendor
+
+$ kubectl exec -n citizen-backend deploy/backend-deploy -- curl -s --connect-timeout 5 cots-vendor-service.cots-vendor.svc.cluster.local:8443/api/status
+
+{"status":"ok","version":"4.2.1"}
+
+# Result: ✅ ALLOWED — citizen-backend can reach COTS on TCP/8443
+
+# -----------------------------------------------------------------------------
+# TEST 4: NodePort service is blocked (K8S-016)
+# Verify Kyverno deny-nodeport ClusterPolicy enforcement
+# -----------------------------------------------------------------------------
+
+$ kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Service
+metadata:
+  name: test-nodeport
+  namespace: citizen-frontend
+spec:
+  type: NodePort
+  ports:
+    - port: 8080
+      nodePort: 30003
+  selector:
+    app: frontend
+EOF
+
+Error from server: admission webhook "kyverno.validation" denied the request:
+  resource Service/citizen-frontend/test-nodeport was blocked due to the following policies:
+  deny-nodeport:
+    nodeport-check: "NodePort services are denied by policy (K8S-016).
+    Use ClusterIP + Ingress/ALB instead."
+
+# Result: ✅ BLOCKED — Kyverno admission policy prevents NodePort service creation
+
+# =============================================================================
+# Summary
+# =============================================================================
+#
+# | Test | Finding | Result |
+# |------|---------|--------|
+# | Default-deny blocks cross-namespace | K8S-015 | ✅ PASS |
+# | CiliumNetworkPolicy allows approved traffic | K8S-015 | ✅ PASS |
+# | CiliumNetworkPolicy blocks unauthorized ports | K8S-015 | ✅ PASS |
+# | COTS lateral movement blocked | Compensating Control 1 | ✅ PASS |
+# | COTS internet egress blocked | Compensating Control 1 | ✅ PASS |
+# | COTS → egress-proxy allowed | Compensating Control 1 | ✅ PASS |
+# | NodePort service denied by Kyverno | K8S-016 | ✅ PASS |

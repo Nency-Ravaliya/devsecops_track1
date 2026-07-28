@@ -1,0 +1,82 @@
+{
+  "SchemaVersion": 2,
+  "CreatedAt": "2026-07-28T09:16:07Z",
+  "ArtifactName": "registry.example.gov.uk/citizen/frontend@sha256:9f2c1a7e4b8d0c3f6a5e2d1b8c7f4a3e6d9b0c1f2a3e4d5b6c7f8a9e0d1b2c3f",
+  "ArtifactType": "container_image",
+  "Metadata": {
+    "OS": { "Family": "alpine", "Name": "3.20.2" },
+    "ImageConfig": { "architecture": "amd64", "os": "linux" }
+  },
+  "Results": [
+    {
+      "Target": "registry.example.gov.uk/citizen/frontend (alpine 3.20.2)",
+      "Class": "os-pkgs",
+      "Type": "alpine",
+      "Vulnerabilities": [
+        {
+          "VulnerabilityID": "CVE-2024-6119",
+          "PkgName": "openssl",
+          "InstalledVersion": "3.3.1-r3",
+          "FixedVersion": "3.3.2-r0",
+          "Severity": "CRITICAL",
+          "Title": "openssl: Possible denial of service in X.509 name checks",
+          "Description": "Applications performing certificate name checks may attempt to read an invalid memory address, resulting in abnormal termination.",
+          "PrimaryURL": "https://avd.aquasec.com/nvd/cve-2024-6119",
+          "CVSS": { "nvd": { "V3Score": 9.1, "V3Vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:N/I:N/A:H" } },
+          "Status": "fixed"
+        },
+        {
+          "VulnerabilityID": "CVE-2024-5535",
+          "PkgName": "openssl",
+          "InstalledVersion": "3.3.1-r3",
+          "FixedVersion": "3.3.1-r1",
+          "Severity": "HIGH",
+          "Title": "openssl: SSL_select_next_proto buffer overread",
+          "PrimaryURL": "https://avd.aquasec.com/nvd/cve-2024-5535",
+          "CVSS": { "nvd": { "V3Score": 7.5 } },
+          "Status": "fixed"
+        }
+      ]
+    },
+    {
+      "Target": "Node.js (node-pkg)",
+      "Class": "lang-pkgs",
+      "Type": "node-pkg",
+      "Vulnerabilities": [
+        {
+          "VulnerabilityID": "CVE-2024-39338",
+          "PkgName": "axios",
+          "InstalledVersion": "1.7.2",
+          "FixedVersion": "1.7.4",
+          "Severity": "HIGH",
+          "Title": "axios: Server-Side Request Forgery via unexpected behavior with requests to relative URLs",
+          "PrimaryURL": "https://avd.aquasec.com/nvd/cve-2024-39338",
+          "CVSS": { "nvd": { "V3Score": 7.5 } },
+          "Status": "fixed"
+        },
+        {
+          "VulnerabilityID": "CVE-2024-45296",
+          "PkgName": "path-to-regexp",
+          "InstalledVersion": "0.1.7",
+          "FixedVersion": "0.1.10",
+          "Severity": "MEDIUM",
+          "Title": "path-to-regexp: Backtracking regular expressions cause ReDoS",
+          "PrimaryURL": "https://avd.aquasec.com/nvd/cve-2024-45296",
+          "CVSS": { "nvd": { "V3Score": 5.3 } },
+          "Status": "fixed"
+        },
+        {
+          "VulnerabilityID": "CVE-2024-43799",
+          "PkgName": "send",
+          "InstalledVersion": "0.18.0",
+          "FixedVersion": "0.19.0",
+          "Severity": "MEDIUM",
+          "Title": "send: Code execution via untrusted input passed to SendStream.redirect()",
+          "PrimaryURL": "https://avd.aquasec.com/nvd/cve-2024-43799",
+          "CVSS": { "nvd": { "V3Score": 5.0 } },
+          "Status": "fixed"
+        }
+      ]
+    }
+  ]
+}
