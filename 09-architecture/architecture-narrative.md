@@ -8,11 +8,13 @@ The HLD diagram is authored as Mermaid in `hld-diagram.mmd`. To render:
 
 ```bash
 # Option 1: Mermaid CLI (npm install -g @mermaid-js/mermaid-cli)
-mmdc -i hld-diagram.mmd -o hld-diagram.png -w 2400 -H 1600
+mmdc -i hld-diagram.mmd -o hld-diagram.svg -w 2400 -H 1600
 
 # Option 2: Online editor
 # Paste hld-diagram.mmd contents into https://mermaid.live
 ```
+
+The attached `hld-diagram.svg` is included in the repo for direct review and slide embedding.
 
 The `.mmd` source is the authoritative artifact. If rendering tooling is not available in the review environment, the Mermaid source is sufficient — a reviewer can view it at https://mermaid.live by pasting the file contents.
 
