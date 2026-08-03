@@ -1,0 +1,61 @@
+name: Policy Gate
+
+on:
+  push:
+    branches: [ "main", "master", "dev" ]
+  pull_request:
+    branches: ["main", "master", "dev"]
+
+jobs:
+  policy-gate:
+    name: Render Helm + Conftest Gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v3
+
+      - name: Install Conftest v0.56.0
+        run: |
+          curl -sSL -o /tmp/conftest.tar.gz https://github.com/open-policy-agent/conftest/releases/download/v0.56.0/conftest_0.56.0_Linux_x86_64.tar.gz
+          sudo tar -xzf /tmp/conftest.tar.gz -C /usr/local/bin
+          conftest --version
+
+      - name: Make scripts executable
+        run: chmod +x scripts/*.sh
+
+      - name: Run policy gate script
+        run: |
+          ./scripts/run_policy_gate.sh
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: policy-gate-artifacts
+          path: artifacts/policy-gate
+
+  gitleaks:
+    name: Gitleaks secrets scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install gitleaks
+        run: |
+          curl -sSL -o /tmp/gitleaks.tar.gz https://github.com/zricethezav/gitleaks/releases/download/v8.21.0/gitleaks_8.21.0_linux_x64.tar.gz
+          sudo tar -xzf /tmp/gitleaks.tar.gz -C /usr/local/bin
+          gitleaks --version
+      - name: Run gitleaks
+        run: gitleaks detect --source . --exit-code 1 || true
+
+  trivy:
+    name: Trivy scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Trivy filesystem scan
+        uses: aquasec/trivy-action@v0.7.0
+        with:
+          scan-type: filesystem
+          severity: HIGH,CRITICAL
