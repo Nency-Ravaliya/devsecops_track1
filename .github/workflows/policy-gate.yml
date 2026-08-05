@@ -131,16 +131,17 @@ jobs:
 
   cosign:
     name: Cosign image signing
-    if: ${{ secrets.COSIGN_PRIVATE_KEY != '' && secrets.COSIGN_PASSWORD != '' }}
     needs: build-and-sbom
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Install Cosign
+        if: ${{ secrets.COSIGN_PRIVATE_KEY != '' && secrets.COSIGN_PASSWORD != '' }}
         run: |
           curl -sSL -o /tmp/cosign.tar.gz https://github.com/sigstore/cosign/releases/download/v${{ env.COSIGN_VERSION }}/cosign-linux-amd64
           sudo install /tmp/cosign.tar.gz /usr/local/bin/cosign
       - name: Sign image
+        if: ${{ secrets.COSIGN_PRIVATE_KEY != '' && secrets.COSIGN_PASSWORD != '' }}
         env:
           COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
           COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
