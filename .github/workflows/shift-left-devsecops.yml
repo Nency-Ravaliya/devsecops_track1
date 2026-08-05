@@ -59,7 +59,7 @@ jobs:
           sudo tar -xzf /tmp/gitleaks.tar.gz -C /usr/local/bin
           gitleaks --version
       - name: Run Gitleaks
-        run: gitleaks detect --source . --exit-code 1 --redact
+        run: gitleaks detect --source . --config .gitleaks.toml --exit-code 1 --redact
 
   kyverno-policy-bundle:
     name: Kyverno policy bundle validation

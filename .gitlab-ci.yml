@@ -21,7 +21,7 @@ variables:
   image: ghcr.io/zricethezav/gitleaks:${GITLEAKS_VERSION}
   stage: lint
   script:
-    - gitleaks detect --source . --redact --exit-code 1
+    - gitleaks detect --source . --config .gitleaks.toml --redact --exit-code 1
 
 .grafana_kubernetes_policy:
   image: docker:24.0.7
