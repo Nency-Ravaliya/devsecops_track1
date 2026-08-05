@@ -70,18 +70,26 @@ jobs:
         shell: bash
         run: |
           if [ -d "02-pipeline-supply-chain/kyverno-policies" ]; then
-            python3 -c 'import glob, sys, subprocess
-            try:
-                import yaml
-            except Exception:
-                subprocess.check_call([sys.executable, "-m", "pip", "install", "pyyaml"])
-                import yaml
-            files = sorted(glob.glob("02-pipeline-supply-chain/kyverno-policies/*.[yY][aA][mM][lL]"))
-            assert files, "No Kyverno YAML files found"
-            for f in files:
-                with open(f, "r", encoding="utf-8") as fh:
-                    list(yaml.safe_load_all(fh))
-                print(f"Validated {f}")'
+            python3 - <<'PY'
+          import glob
+          import subprocess
+          import sys
+
+          try:
+              import yaml
+          except Exception:
+              subprocess.check_call([sys.executable, "-m", "pip", "install", "pyyaml"])
+              import yaml
+
+          files = sorted(glob.glob("02-pipeline-supply-chain/kyverno-policies/*.[yY][aA][mM][lL]"))
+          if not files:
+              raise AssertionError("No Kyverno YAML files found")
+
+          for f in files:
+              with open(f, "r", encoding="utf-8") as fh:
+                  list(yaml.safe_load_all(fh))
+              print(f"Validated {f}")
+          PY
           else
             echo "Kyverno policy directory not present; skipping validation"
           fi
