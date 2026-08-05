@@ -136,16 +136,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install Cosign
-        if: ${{ secrets.COSIGN_PRIVATE_KEY != '' && secrets.COSIGN_PASSWORD != '' }}
-        run: |
-          curl -sSL -o /tmp/cosign.tar.gz https://github.com/sigstore/cosign/releases/download/v${{ env.COSIGN_VERSION }}/cosign-linux-amd64
-          sudo install /tmp/cosign.tar.gz /usr/local/bin/cosign
-      - name: Sign image
-        if: ${{ secrets.COSIGN_PRIVATE_KEY != '' && secrets.COSIGN_PASSWORD != '' }}
         env:
           COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
           COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
         run: |
+          if [ -z "$COSIGN_PRIVATE_KEY" ] || [ -z "$COSIGN_PASSWORD" ]; then
+            echo "Cosign secrets not configured; skipping signing."
+            exit 0
+          fi
+          curl -sSL -o /tmp/cosign.tar.gz https://github.com/sigstore/cosign/releases/download/v${{ env.COSIGN_VERSION }}/cosign-linux-amd64
+          sudo install /tmp/cosign.tar.gz /usr/local/bin/cosign
+      - name: Sign image
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+        run: |
+          if [ -z "$COSIGN_PRIVATE_KEY" ] || [ -z "$COSIGN_PASSWORD" ]; then
+            echo "Cosign secrets not configured; skipping signing."
+            exit 0
+          fi
           echo "$COSIGN_PRIVATE_KEY" > cosign.key
           cosign sign --key cosign.key --yes $IMAGE_NAME
           cosign attach sbom --sbom sbom.cyclonedx.json $IMAGE_NAME
