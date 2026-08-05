@@ -1,0 +1,411 @@
+DevSecOps Engineer 
+
+Technical Assessment 
+
+Track 1 — Kubernetes & Container Security 
+
+Programme Context: Multi-Cloud Workloads | Terraform IaC | GitLab CI/CD | Government Cloud Environments 
+
+ 
+
+Assessment Overview 
+
+This assessment focuses on Kubernetes and container security, inside a broader multi-cloud DevSecOps remit. The environment runs on AWS today, with Azure and GCP workloads on the roadmap, so the pipeline and review approach need to hold up regardless of which cloud a given cluster runs on. Where a concrete anchor is useful, examples below use EKS — the reasoning should generalise to AKS and GKE without much translation. 
+
+This is a working exercise, not a written exam. You'll review real infrastructure code, design against constraints that don't have a clean textbook answer, produce artefacts in a GitHub repository, and defend your reasoning live in front of a panel. 
+
+Two architecture diagrams — a high-level and a low-level design — are required deliverables you produce yourself as part of this assessment, not something handed to you. Section 8 covers what's expected. 
+
+What this is actually testing 
+
+Not whether Kubernetes documentation can be recited from memory. What matters is how findings get triaged and prioritised, how trade-offs get negotiated with delivery teams, how a design decision gets defended under scrutiny, and whether all of this can be explained to someone without a security background well enough that they can act on it. 
+
+1. Role Focus 
+
+1.1 Where This Sits in the Programme 
+
+This track covers the workstream where container orchestration carries a disproportionate share of the risk in the estate — currently EKS, with the same patterns expected to apply once Azure/GCP clusters come online. Whoever owns this is expected to be the go-to on Kubernetes and container security questions, while staying conversant enough in the wider cloud/Terraform/compliance picture that this doesn't become a silo nobody else can touch. 
+
+1.2 What a Strong Answer Looks Like 
+
+Has actually led a Kubernetes security hardening effort end to end — not just contributed a PR to one someone else was driving. 
+
+Talks about security/velocity trade-offs in specific terms, not 'it depends' or 'block everything by default.' 
+
+Knows precisely where the managed-Kubernetes shared-responsibility line sits, and where it differs across EKS, AKS, and GKE. 
+
+Has built or substantially reworked a shift-left pipeline and a runtime detection capability, not only operated tooling someone else designed. 
+
+Can walk a delivery engineer through a finding, and a governance board through a risk decision, without switching vocabularies badly. 
+
+1.3 What This Is Not 
+
+Not a certification exam, and not a memory test on internal government compliance clause numbers — those documents aren't public and won't be shared here. What's being evaluated is the approach that would be used once access to the real standards exists. 
+
+2. Business Scenario 
+
+2.1 The Situation 
+
+The programme runs roughly 100 workloads on AWS today, provisioned through Terraform on GitLab, split across two government landing zone tiers — an earlier-generation one and a newer one with continuous compliance monitoring switched on. About 18 of those workloads run on EKS, mostly citizen-facing services with unpredictable traffic. A handful were containerised in a hurry during an earlier modernisation push, and the debt from that shows: inconsistent RBAC across namespaces, no cluster-wide admission control, no runtime threat detection, and one COTS product shipped as a container image the vendor won't rebuild without a paid support contract. 
+
+Three weeks ago an internal audit found a ClusterRoleBinding granting cluster-admin to a service account used by a CI job — the kind of finding that, if exploited, could plausibly reach across every workload in the cluster. There's now a mandate for a full Kubernetes security review ahead of a migration wave next quarter, with formal sign-off required before go-live, and a separate requirement that whatever gets designed should not need to be rebuilt from scratch the moment an Azure or GCP cluster shows up. 
+
+2.2 Current-State Environment (for reference) 
+
+No architecture diagram is provided for this environment — producing one is part of the assessment (Section 8). For context, the current state is understood to include: 
+
+Two landing zone tiers: an older VPC-per-environment model, and a newer landing-zone-accelerator-style model with centralised logging. 
+
+A self-managed GitLab instance with both group-level and project-level runners. 
+
+EKS managed node groups, default VPC CNI (no NetworkPolicy enforcement today), AWS Load Balancer Controller for ingress. 
+
+No cluster-wide admission controller currently deployed; RBAC has been applied inconsistently namespace-by-namespace. 
+
+No centralised secrets management for workloads — a mix of native Kubernetes Secrets and a few one-off integrations. 
+
+No runtime security/detection tooling deployed on any cluster today. 
+
+Roadmap: AKS and GKE onboarding within the next two quarters, expected to sit under the same governance model. 
+
+2.3 What's Expected 
+
+A security review of the containerised workloads, written up as a prioritised findings register. 
+
+A shift-left pipeline and software supply chain redesign that would have caught the ClusterRoleBinding issue before merge. 
+
+A runtime security and incident response approach for the cluster estate. 
+
+A remediation advisory pack a delivery engineer can act on without a security background. 
+
+A recommendation for the COTS product that can't be immediately remediated. 
+
+A high-level and a low-level architecture diagram for the target-state secure design. 
+
+A live walkthrough of findings and recommendations to a mock governance panel. 
+
+2.4 Constraints 
+
+No access to the real environment — the review uses a public reference repository instead (Section 3). 
+
+Some controls can't be fully automated because of COTS/legacy limitations — compensating controls need to be part of the answer, not just a list of gaps. 
+
+There's a hard compliance deadline, so recommendations need to be realistic about what can actually be fixed before go-live versus accepted as residual risk with a plan attached. 
+
+3. Public Repository Options 
+
+The real Terraform/EKS codebase is confidential, so the hands-on review should be done against a public, intentionally-vulnerable reference repository instead. Pick one primary repository; a second can be referenced for supplementary findings if genuinely relevant. 
+
+3.1 Suggested Options 
+
+Repository 
+
+Location 
+
+Why it fits here 
+
+kubernetes-goat (madhuakula) 
+
+github.com/madhuakula/kubernetes-goat 
+
+Deliberately vulnerable cluster covering RBAC, secrets, network policy, and container escape scenarios. Cloud-agnostic. 
+
+terragoat (bridgecrewio) 
+
+github.com/bridgecrewio/terragoat 
+
+Deliberately vulnerable Terraform spanning AWS, GCP, and Azure — pair with kubernetes-goat if provisioning-level and cluster-level findings both need to be shown. 
+
+EKS Blueprints (aws-ia) 
+
+github.com/aws-ia/terraform-aws-eks-blueprints 
+
+A production-grade reference — useful as a 'this is what good looks like' baseline. 
+
+kube-bench (aquasecurity) 
+
+github.com/aquasecurity/kube-bench 
+
+Automated CIS Kubernetes Benchmark checks — useful as supporting evidence alongside manual findings. 
+
+ 
+
+A reasonable combination: fork kubernetes-goat as the primary review target, and reference aws-ia/terraform-aws-eks-blueprints as the hardened target state when writing remediation and the architecture diagrams. 
+
+3.2 Substituting a Different Repository 
+
+A different public repository is fine if it demonstrates the same depth, as long as it's genuinely public and forkable, contains real Terraform and/or Kubernetes manifests, and the choice is briefly justified in the submission README. 
+
+4. Required GitHub Submission Structure 
+
+Fork or create a repository for the submission. The repository itself is part of what's being evaluated — organisation, commit history, and documentation quality all factor in alongside the technical content. 
+
+4.1 Folder Structure 
+
+devsecops-assessment-track1/ 
+
+├── README.md                          # Overview, approach, how to navigate the repo 
+
+├── 01-findings/ 
+
+│   ├── findings-register.md            # Module 1 
+
+│   └── severity-methodology.md 
+
+├── 02-pipeline-supply-chain/ 
+
+│   ├── pipeline-design.md              # Module 2 
+
+│   └── .gitlab-ci-example.yml 
+
+├── 03-runtime-security/ 
+
+│   └── runtime-detection-ir-plan.md    # Module 3 
+
+├── 04-network-mesh/ 
+
+│   └── zero-trust-design.md            # Module 4 
+
+├── 05-secrets-keys/ 
+
+│   └── secrets-architecture.md         # Module 5 
+
+├── 06-remediation/ 
+
+│   ├── remediation-advisory.md         # Module 6 
+
+│   ├── compensating-controls.md        # Module 7 
+
+│   └── fixed-manifests/ 
+
+├── 07-threat-model/ 
+
+│   └── threat-model.md                 # Module 8 
+
+├── 08-compliance/ 
+
+│   └── compliance-mapping.md           # Module 9 
+
+├── 09-architecture/ 
+
+│   ├── hld-diagram.(png|drawio|svg)    # Module 10 
+
+│   ├── lld-diagram.(png|drawio|svg)    # Module 11 
+
+│   └── architecture-narrative.md 
+
+├── 10-resilience-dr/ 
+
+│   └── dr-plan.md                      # Module 12 
+
+└── 11-presentation/ 
+
+    └── slides.pdf 
+
+4.2 README.md, at minimum 
+
+A short executive summary of the overall security posture found in the reference repository. 
+
+The chosen repository (Section 3), and justification if a substitute was used. 
+
+A brief note on approach and how the modules connect to one another. 
+
+4.3 Commit Hygiene 
+
+Incremental, meaningful commits rather than a single 'final submission' commit. 
+
+No secrets, credentials, or internal information committed at any point, including in history. 
+
+Commit messages tied to the module being worked on. 
+
+5. Hands-On Assessment Modules 
+
+Twelve modules, each mapping to a domain in the programme's DevSecOps scope. Depth and defensibility of reasoning matter more than exhaustive coverage — but breadth across the full list matters too, since real environments don't let you pick and choose which risk category to think about. 
+
+Module 1 — Cluster & Workload Security Review 
+
+Against the chosen repository, produce a findings register (at least 20 findings) across Terraform/cluster provisioning and Kubernetes manifests/RBAC. For each: description and exact location, severity with rationale, control domain, a plain-language risk statement, and remediation with an effort estimate. 
+
+Cluster/API server exposure and authentication configuration. 
+
+RBAC over-permissioning, including cross-namespace and ClusterRole scope creep. 
+
+Pod security context weaknesses: privileged containers, hostPath, hostNetwork, hostPID, allowPrivilegeEscalation, missing seccomp/AppArmor profiles. 
+
+Secrets handling, including env-var injection vs. mounted secrets, and etcd encryption-at-rest. 
+
+Workload identity boundary between nodes and pods (IRSA-equivalent across providers). 
+
+Image provenance, tagging discipline, and base image hygiene. 
+
+Network policy posture and CNI enforcement capability. 
+
+Control-plane and audit logging coverage, and where those logs actually go. 
+
+Node/OS-level hardening — kernel parameters, unnecessary daemons, CIS benchmark alignment for the underlying host. 
+
+Resource governance — missing limits/requests, and the denial-of-service and noisy-neighbour risk that creates. 
+
+Module 2 — Shift-Left Pipeline & Software Supply Chain Security 
+
+Design a CI/CD pipeline that would have caught the ClusterRoleBinding incident before merge, and that treats the software supply chain — not just the manifest — as in scope. 
+
+Named tools at each gate (e.g. Checkov/tfsec, kube-score, OPA/Conftest, Trivy/Grype, Cosign) and exactly what each checks. 
+
+Hard-fail vs. soft-fail (warn-only) gates, and the reasoning for that split. 
+
+A protected-environment approval step reflecting security sign-off before production. 
+
+SBOM generation and where it's stored/consumed. 
+
+Image signing and admission-time signature verification (e.g. Cosign + policy controller/Kyverno). 
+
+Provenance attestation — what a SLSA-style approach would add here, and whether it's proportionate given team maturity. 
+
+How the design would need to change, if at all, for a cluster on a different cloud provider. 
+
+Submit both a written design and an illustrative .gitlab-ci.yml. 
+
+Module 3 — Runtime Security, Detection & Incident Response 
+
+The current estate has no runtime detection capability. Design one, and describe how an incident would actually be handled. 
+
+Runtime threat detection approach (e.g. Falco or an equivalent) — what rule categories matter most for this workload mix, and why. 
+
+What telemetry gets collected, where it's shipped, and how alert fatigue is managed. 
+
+A concrete incident scenario: a pod is confirmed compromised via a container escape attempt. Walk through detection, containment (isolating the pod/node without destroying forensic evidence), eradication, and recovery. 
+
+What forensic evidence would be captured before the pod is killed, and how that's done in a way that doesn't tip off an attacker with active access. 
+
+How this incident would be communicated up to the ITSO-equivalent stakeholder while it's still unfolding, versus in the post-incident report. 
+
+Module 4 — Zero-Trust Networking & Service Mesh 
+
+The current CNI doesn't enforce NetworkPolicy. Propose a target-state networking design. 
+
+Default-deny NetworkPolicy baseline and how exceptions get requested and reviewed. 
+
+Whether a service mesh (e.g. Istio/Linkerd) is justified here — argue both for and against given the workload mix, don't just default to 'yes, always add a mesh.' 
+
+If a mesh is recommended: mTLS enforcement, authorization policy design, and the operational cost (complexity, latency, upgrade burden) that comes with it. 
+
+Ingress/egress control, including how egress to the public internet is restricted for workloads that shouldn't need it. 
+
+How this design changes, if at all, across EKS/AKS/GKE given differences in CNI options. 
+
+Module 5 — Secrets & Key Management Architecture 
+
+There's no centralised secrets management today. Design one. 
+
+Comparison of at least two approaches (e.g. External Secrets Operator against a cloud-native secrets manager, vs. HashiCorp Vault, vs. Sealed Secrets/SOPS) with an honest trade-off discussion, not just a recommendation. 
+
+Secret rotation strategy and how rotation propagates to running pods without a manual restart cycle. 
+
+Encryption key hierarchy — where the root of trust sits, and who/what can access it. 
+
+How this design ports across cloud providers without needing a different secrets backend per cloud. 
+
+Module 6 — Remediation Advisory Pack 
+
+Take the three most critical findings from Module 1 and write delivery-facing remediation guidance for engineers without a security background. 
+
+A plain-language explanation of the risk — no unexplained jargon. 
+
+Step-by-step remediation instructions or corrected code. 
+
+What evidence would be needed to confirm the fix is actually complete. 
+
+Module 7 — Compensating Controls for a COTS Constraint 
+
+The scenario describes a COTS product shipped as a container image the vendor won't rebuild, meaning some known gap can't be immediately remediated (state the assumed gap). 
+
+The assumed gap being worked around. 
+
+At least three compensating controls, drawing on the network, runtime, and admission-control designs from earlier modules rather than inventing unrelated ones. 
+
+A recommended residual risk rating after compensating controls, and who should formally accept that risk. 
+
+A time-bound remediation plan — interim state vs. target state. 
+
+Module 8 — Threat Modeling Exercise 
+
+Pick one workload from the reference repository and produce a threat model using STRIDE (or a methodology of your choice, stated explicitly). 
+
+A data flow diagram for the chosen workload (can be simple — this is not the HLD/LLD from Section 8). 
+
+At least 8 identified threats across multiple STRIDE categories, not clustered in just one or two. 
+
+For each threat: likelihood, impact, and the specific control (existing or proposed) that addresses it. 
+
+At least one threat that existing controls do not fully mitigate, with an honest statement of the residual risk. 
+
+Module 9 — Compliance Mapping 
+
+Access to the actual internal compliance clause text won't be provided here. Instead, show the mapping methodology: take five findings from Module 1 and show how each would be categorised against plausible compliance domains (access control, encryption, logging & monitoring, configuration baseline, secure development lifecycle), and what evidence would be gathered to demonstrate compliance or justify an exception. 
+
+Module 10 — High-Level Architecture Diagram (HLD) 
+
+Produce a high-level architecture diagram for the target-state secure design described across Modules 1–9. This is a system-context view, not a component inventory. 
+
+Major building blocks: source control/CI, the cluster(s), identity provider, secrets/key management, logging/monitoring destination, and any external-facing edge (ingress/WAF/API gateway). 
+
+Trust boundaries and environment boundaries — clearly marked, not implied by box placement alone. 
+
+Data flow direction between major components, at a level a non-technical stakeholder could follow. 
+
+Should fit on one page/slide and be presentable to a governance audience without a technical walkthrough. 
+
+Module 11 — Low-Level Architecture Diagram (LLD) 
+
+Produce a low-level architecture diagram that an engineer could actually implement from, expanding on one representative slice of the HLD (e.g. a single workload's path from ingress to data store). 
+
+Specific resources: node groups, namespaces, service accounts, admission controllers, sidecars/mesh components, NetworkPolicy boundaries. 
+
+IAM/workload-identity roles attached to specific components, with the permissions each actually needs. 
+
+Where encryption happens (in transit and at rest) and where secrets are injected. 
+
+Where the pipeline from Module 2 and the detection tooling from Module 3 physically sit relative to the runtime components. 
+
+Port/protocol-level detail where it matters for the security story (e.g. what's actually allowed through a given NetworkPolicy). 
+
+8.x A Note on Both Diagrams 
+
+Use any tool that produces a clear result — draw.io, Lucidchart, Excalidraw, or even a well-organised Mermaid diagram checked into the repo. Include a short narrative (architecture-narrative.md) explaining the key security decisions in both diagrams, and at least one alternative design that was considered and rejected, with the reasoning why. 
+
+Module 12 — Resilience, Backup & Disaster Recovery Design 
+
+Security assurance that ignores availability is incomplete. Design a resilience approach for the cluster estate. 
+
+etcd/control-plane backup strategy and how backups are encrypted and access-controlled. 
+
+Stateful workload backup approach (e.g. persistent volume snapshotting) and restore testing cadence. 
+
+A named RTO/RPO for at least one representative workload, and what architecture choices that target actually requires. 
+
+What happens if an entire cluster needs to be rebuilt from scratch — how much of the target state in Module 10/11 is recoverable purely from what's in Git versus what would be lost. 
+
+6. Final Presentation Requirement 
+
+6.1 Format 
+
+45 minutes total: 25-minute presentation, 20-minute panel Q&A. 
+
+Delivered live (video call) to a panel. 
+
+Slide deck (PDF) submitted to 11-presentation/slides.pdf at least 24 hours before the session. 
+
+6.2 Required Content 
+
+An executive summary — overall risk posture, in language a non-technical stakeholder can act on. 
+
+The top findings and why they were prioritised above the rest. 
+
+The shift-left, runtime security, and networking designs, and how they work together as one story rather than three disconnected modules. 
+
+The HLD and LLD, walked through at the appropriate level of detail for each. 
+
+The COTS/compensating-controls recommendation and the residual risk decision being asked of the panel. 
+
+A clear close on what the first stretch of time on this programme would actually look like. 

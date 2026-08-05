@@ -1,14 +1,27 @@
-name: Policy Gate
+name: Shift-Left DevSecOps Pipeline
 
 on:
   push:
-    branches: [ "main", "master", "dev" ]
+    branches: ["main", "master", "dev"]
   pull_request:
     branches: ["main", "master", "dev"]
 
+permissions:
+  contents: read
+  packages: write
+
+env:
+  CONFTEST_VERSION: "0.56.0"
+  GITLEAKS_VERSION: "8.21.6"
+  TRIVY_VERSION: "0.55.2"
+  GRYPE_VERSION: "0.82.0"
+  COSIGN_VERSION: "2.4.3"
+  KYVERNO_VERSION: "1.13.4"
+  IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/devsecops-track1:${{ github.sha }}
+
 jobs:
   policy-gate:
-    name: Render Helm + Conftest Gate
+    name: Render Helm + Conftest OPA gate
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -17,7 +30,7 @@ jobs:
       - name: Setup Helm
         uses: azure/setup-helm@v3
 
-      - name: Install Conftest v0.56.0
+      - name: Install Conftest
         run: |
           curl -sSL -o /tmp/conftest.tar.gz https://github.com/open-policy-agent/conftest/releases/download/v0.56.0/conftest_0.56.0_Linux_x86_64.tar.gz
           sudo tar -xzf /tmp/conftest.tar.gz -C /usr/local/bin
@@ -27,8 +40,7 @@ jobs:
         run: chmod +x scripts/*.sh
 
       - name: Run policy gate script
-        run: |
-          ./scripts/run_policy_gate.sh
+        run: ./scripts/run_policy_gate.sh
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -41,20 +53,106 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install gitleaks
+      - name: Install Gitleaks
         run: |
           curl -sSL -o /tmp/gitleaks.tar.gz https://github.com/zricethezav/gitleaks/releases/download/v8.21.0/gitleaks_8.21.0_linux_x64.tar.gz
           sudo tar -xzf /tmp/gitleaks.tar.gz -C /usr/local/bin
           gitleaks --version
-      - name: Run gitleaks
-        run: gitleaks detect --source . --exit-code 1 || true
+      - name: Run Gitleaks
+        run: gitleaks detect --source . --exit-code 1 --redact
 
-  trivy:
-    name: Trivy scan
+  kyverno-policy-bundle:
+    name: Kyverno policy bundle validation
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Run Trivy filesystem scan (docker)
+      - name: Validate Kyverno YAML bundle
         run: |
-          # Run Trivy in Docker scanning the repository root
-          docker run --rm -v "$GITHUB_WORKSPACE":/project aquasecurity/trivy:0.44.0 fs --severity HIGH,CRITICAL /project || true
+          if [ -d "02-pipeline-supply-chain/kyverno-policies" ]; then
+            python3 - <<'PY'
+            import glob, sys
+            try:
+                import yaml
+            except Exception:
+                import subprocess
+                subprocess.check_call([sys.executable, '-m', 'pip', 'install', 'pyyaml'])
+                import yaml
+            files = sorted(glob.glob('02-pipeline-supply-chain/kyverno-policies/*.[yY][aA][mM][lL]'))
+            if not files:
+                raise SystemExit('No Kyverno YAML files found')
+            for f in files:
+                with open(f, 'r', encoding='utf-8') as fh:
+                    list(yaml.safe_load_all(fh))
+                print(f'Validated {f}')
+            PY
+          else
+            echo "Kyverno policy directory not present; skipping validation"
+          fi
+
+  trivy-fs:
+    name: Trivy filesystem scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Trivy filesystem scan
+        run: docker run --rm -v "$GITHUB_WORKSPACE":/project aquasec/trivy:${{ env.TRIVY_VERSION }} fs --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 /project
+
+  build-and-sbom:
+    name: Build image + generate SBOM
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+      - name: Build image
+        run: docker build -t $IMAGE_NAME .
+      - name: Generate CycloneDX SBOM
+        run: docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$GITHUB_WORKSPACE":/work aquasec/trivy:${{ env.TRIVY_VERSION }} image --format cyclonedx --output /work/sbom.cyclonedx.json $IMAGE_NAME
+      - name: Upload SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom.cyclonedx.json
+
+  grype:
+    name: Grype image scan
+    needs: build-and-sbom
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Grype scan
+        run: docker run --rm -v /var/run/docker.sock:/var/run/docker.sock anchore/grype:${{ env.GRYPE_VERSION }} $IMAGE_NAME --fail-on high --only-fixed --output json --file grype-report.json || true
+      - name: Upload Grype report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: grype-report
+          path: grype-report.json
+
+  cosign:
+    name: Cosign image signing
+    if: ${{ secrets.COSIGN_PRIVATE_KEY != '' && secrets.COSIGN_PASSWORD != '' }}
+    needs: build-and-sbom
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Cosign
+        run: |
+          curl -sSL -o /tmp/cosign.tar.gz https://github.com/sigstore/cosign/releases/download/v${{ env.COSIGN_VERSION }}/cosign-linux-amd64
+          sudo install /tmp/cosign.tar.gz /usr/local/bin/cosign
+      - name: Sign image
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+        run: |
+          echo "$COSIGN_PRIVATE_KEY" > cosign.key
+          cosign sign --key cosign.key --yes $IMAGE_NAME
+          cosign attach sbom --sbom sbom.cyclonedx.json $IMAGE_NAME
+
+  final-gate:
+    name: CI final policy gate
+    needs: [policy-gate, gitleaks, kyverno-policy-bundle, trivy-fs, build-and-sbom, grype]
+    runs-on: ubuntu-latest
+    steps:
+      - name: All required checks passed
+        run: echo "Shift-left DevSecOps checks completed."
