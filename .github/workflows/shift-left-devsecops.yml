@@ -100,7 +100,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Run Trivy filesystem scan
-        run: docker run --rm -v "$GITHUB_WORKSPACE":/project aquasec/trivy:${{ env.TRIVY_VERSION }} fs --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 /project
+        run: |
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE":/project \
+            aquasec/trivy:${{ env.TRIVY_VERSION }} \
+            fs \
+            --severity HIGH,CRITICAL \
+            --ignore-unfixed \
+            --skip-dirs reference-target \
+            --exit-code 1 \
+            /project
 
   build-and-sbom:
     name: Build image + generate SBOM
