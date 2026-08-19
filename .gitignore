@@ -22,8 +22,10 @@ Thumbs.db
 *.tmp
 *.temp
 
-# Build and generated artifacts
-artifacts/
+# Build and generated artifacts — runtime outputs are gitignored;
+# but the evidence/ and example artefacts checked in for review are kept.
+artifacts/*.tar
+artifacts/*.tgz
 coverage/
 build/
 dist/
@@ -42,11 +44,14 @@ __pycache__/
 *.pptx
 *.pdf
 
-# Optional: local demo output or generated reports
-*.json
+# Optional: local demo output or generated reports (real runs only)
+# Do NOT ignore tracked example/evidence JSON files
 *.csv
 
-# Keep repo policy files tracked
+# Keep repo policy files and evidence artefacts tracked
 !platform-policies/**
 !02-pipeline-supply-chain/*.yml
 !02-pipeline-supply-chain/*.yaml
+!02-pipeline-supply-chain/evidence/**
+!08-compliance/evidence/**
+!scripts/install_kind.sh
