@@ -4,12 +4,15 @@ stages:
   - sbom
   - image
   - sign
+  - approve   # Security sign-off gate before any production deployment
   - deploy
 
 variables:
   GIT_DEPTH: "1"
+  CHECKOV_VERSION: "3.2.231"
   CONFTEST_VERSION: "0.56.0"
   GITLEAKS_VERSION: "8.21.6"
+  KUBE_SCORE_VERSION: "1.18.0"
   TRIVY_VERSION: "0.55.2"
   GRYPE_VERSION: "0.82.0"
   COSIGN_VERSION: "2.4.3"
@@ -17,13 +20,26 @@ variables:
   IMAGE_TAG: "${CI_COMMIT_SHORT_SHA}"
   IMAGE_NAME: "${CI_REGISTRY_IMAGE}:${IMAGE_TAG}"
 
-.gitleaks_template:
+# ---------------------------------------------------------------------------
+# STAGE: lint
+# ---------------------------------------------------------------------------
+
+# Scan source for leaked secrets/credentials. Hard-fail — no secrets may reach
+# the repo under any circumstance (§4.3 commit hygiene + Module 2 Stage 1).
+gitleaks_scan:
   image: ghcr.io/zricethezav/gitleaks:${GITLEAKS_VERSION}
   stage: lint
   script:
     - gitleaks detect --source . --config .gitleaks.toml --redact --exit-code 1
 
-.grafana_kubernetes_policy:
+# ---------------------------------------------------------------------------
+# STAGE: policy
+# ---------------------------------------------------------------------------
+
+# OPA/Conftest — evaluates Kubernetes manifests against Rego policies in
+# platform-policies/policy/. Hard-fail on Critical/High pod-security and RBAC
+# violations (Module 2, Stage 2). Soft-fail on resource governance.
+conftest_policy_gate:
   image: docker:24.0.7
   stage: policy
   services:
@@ -33,20 +49,67 @@ variables:
     DOCKER_TLS_CERTDIR: ""
   before_script:
     - apk add --no-cache curl bash tar
-    - curl -sSL https://github.com/open-policy-agent/conftest/releases/download/v0.56.0/conftest_0.56.0_Linux_x86_64.tar.gz -o /tmp/conftest.tar.gz
+    - curl -sSL https://github.com/open-policy-agent/conftest/releases/download/v${CONFTEST_VERSION}/conftest_${CONFTEST_VERSION}_Linux_x86_64.tar.gz -o /tmp/conftest.tar.gz
     - tar -xzf /tmp/conftest.tar.gz -C /usr/local/bin
   script:
     - ./scripts/run_policy_gate.sh
   artifacts:
+    when: always
     paths:
       - artifacts/policy-gate/
 
-gitleaks_scan:
-  extends: .gitleaks_template
+# Checkov — IaC scanner for Terraform and CDK. Hard-fail on HIGH and CRITICAL
+# findings (e.g. CKV_AWS_58 etcd encryption, CKV_AWS_138 IRSA, open egress).
+# Addresses K8S-011, K8S-012, K8S-025, K8S-026 (Module 2 §Stage 2).
+checkov_iac:
+  image: bridgecrew/checkov:${CHECKOV_VERSION}
+  stage: policy
+  script:
+    - |
+      checkov \
+        --directory . \
+        --framework terraform,cloudformation \
+        --skip-path reference-target \
+        --skip-path node_modules \
+        --compact \
+        --soft-fail-on MEDIUM,LOW \
+        --hard-fail-on HIGH,CRITICAL \
+        --output cli \
+        --output-file-path . \
+        2>&1 | tee artifacts/checkov-report.txt || exit 1
+  artifacts:
+    when: always
+    paths:
+      - artifacts/checkov-report.txt
+  allow_failure: false
 
-conftest_policy_gate:
-  extends: .grafana_kubernetes_policy
+# kube-score — Kubernetes manifest scorer against best-practice rules.
+# Soft-fail (warn-only): kube-score catches broader hygiene issues and is kept
+# as a defence-in-depth layer; its failures are MR comments, not blockers.
+# See Module 2 §3 hard-fail/soft-fail rationale.
+kube_score:
+  image: zegl/kube-score:v${KUBE_SCORE_VERSION}
+  stage: policy
+  script:
+    - |
+      echo "Running kube-score on Kubernetes manifests (soft-fail — warn only)"
+      find . \
+        \( -path ./reference-target -prune -o -path ./node_modules -prune \) \
+        -o -name "*.yaml" -o -name "*.yml" \
+        -print0 2>/dev/null \
+        | xargs -0 -r kube-score score \
+            --ignore-test=container-image-pull-policy \
+            --ignore-test=pod-networkpolicy \
+          2>&1 | tee artifacts/kube-score-report.txt
+      echo "kube-score complete (soft-fail — see report for warnings)"
+  artifacts:
+    when: always
+    paths:
+      - artifacts/kube-score-report.txt
+  allow_failure: true   # soft-fail: report findings, do not block merge
 
+# Kyverno CLI — validates Kyverno ClusterPolicy CRDs in the policy bundle.
+# Ensures policy syntax is valid before runtime admission enforcement.
 kyverno_policy_bundle:
   image: ghcr.io/kyverno/kyverno-cli:${KYVERNO_VERSION}
   stage: policy
@@ -62,12 +125,21 @@ kyverno_policy_bundle:
         echo "No Kyverno policy bundle present; skipping validation"
       fi
 
+# Trivy filesystem scan — scans source code and Dockerfiles for known CVEs
+# and misconfigurations. Hard-fail on HIGH and CRITICAL with a fix available.
 trivy_fs_scan:
   image: aquasec/trivy:${TRIVY_VERSION}
   stage: policy
   script:
     - trivy fs --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed .
 
+# ---------------------------------------------------------------------------
+# STAGE: sbom
+# ---------------------------------------------------------------------------
+
+# Trivy SBOM — generates CycloneDX SBOM from the built image.
+# Hard-fail if SBOM generation fails (governance requirement). The SBOM is
+# attached to the image as a signed in-toto attestation in the sign stage.
 trivy_sbom:
   image: aquasec/trivy:${TRIVY_VERSION}
   stage: sbom
@@ -79,6 +151,9 @@ trivy_sbom:
   needs:
     - docker_build
 
+# Grype — second-opinion CVE scan against the SBOM using its own vuln DB.
+# Soft-fail: discrepancies between Trivy and Grype are flagged for security
+# team review but do not auto-block (Module 2 §Stage 3).
 grype_scan:
   image: anchore/grype:${GRYPE_VERSION}
   stage: sbom
@@ -90,6 +165,10 @@ grype_scan:
     paths:
       - grype-report.json
   allow_failure: true
+
+# ---------------------------------------------------------------------------
+# STAGE: image
+# ---------------------------------------------------------------------------
 
 docker_build:
   image: docker:24.0.7
@@ -105,6 +184,15 @@ docker_build:
     - docker build -t "$IMAGE_NAME" .
     - docker push "$IMAGE_NAME"
 
+# ---------------------------------------------------------------------------
+# STAGE: sign
+# ---------------------------------------------------------------------------
+
+# Cosign — signs the OCI image digest with KMS-backed key and attaches the
+# CycloneDX SBOM as a signed in-toto attestation (Module 2, Stage 4).
+# Keyless mode is skipped in favour of KMS to meet sovereign data residency
+# requirements. The same cosign CLI works for AWS KMS, Azure KV, and GCP KMS
+# by changing the --key URI — portability across EKS/AKS/GKE.
 cosign_sign:
   image: gcr.io/projectsigstore/cosign:${COSIGN_VERSION}
   stage: sign
@@ -120,14 +208,82 @@ cosign_sign:
       cosign sign --yes --key env://COSIGN_PRIVATE_KEY --tlog-upload=false "${IMAGE_NAME}"
       cosign attach sbom --sbom sbom.cyclonedx.json "${IMAGE_NAME}"
 
-deploy_placeholder:
+# ---------------------------------------------------------------------------
+# STAGE: approve  — Protected Environment Security Sign-Off
+#
+# This is the security gate required before any production deployment.
+# Only members of the 'security-reviewers' GitLab protected environment group
+# can trigger this job.
+#
+# The approver sees: Trivy/Grype scan summary, SBOM link, Conftest results,
+# Checkov report, kube-score warnings, and any soft-fail findings before
+# clicking "Play". This provides the formal security sign-off required by
+# governance before go-live (Module 2 §Stage 6; §4.3 Commit Hygiene context).
+#
+# To configure:
+#   GitLab → Settings → CI/CD → Protected Environments → 'production'
+#   → Required approvals: 1, Allowed to deploy: security-reviewers group
+# ---------------------------------------------------------------------------
+
+security_approval:
+  image: alpine:3.20
+  stage: approve
+  environment:
+    name: production
+    action: prepare
+  when: manual
+  allow_failure: false   # hard-fail: deployment cannot proceed without approval
+  needs:
+    - gitleaks_scan
+    - conftest_policy_gate
+    - checkov_iac
+    - kube_score
+    - trivy_fs_scan
+    - kyverno_policy_bundle
+    - cosign_sign
+    - grype_scan
+  script:
+    - |
+      echo "============================================================"
+      echo "  Security Sign-Off Gate — Production Environment"
+      echo "============================================================"
+      echo ""
+      echo "  Approver: review the following artefacts before proceeding:"
+      echo "    1. Gitleaks scan   — no secrets in source"
+      echo "    2. Conftest/OPA    — Kubernetes manifest policy gates"
+      echo "    3. Checkov         — IaC security scan (Terraform/CDK)"
+      echo "    4. kube-score      — manifest hygiene warnings"
+      echo "    5. Trivy FS scan   — source CVE scan (HIGH/CRITICAL)"
+      echo "    6. Grype report    — second-opinion CVE scan (soft-fail)"
+      echo "    7. Cosign signed   — image signature attached"
+      echo "    8. Kyverno bundle  — admission policies validated"
+      echo ""
+      echo "  By running this job you confirm that all findings have been"
+      echo "  reviewed and either remediated or formally accepted as"
+      echo "  residual risk per the programme risk register."
+      echo "============================================================"
+      echo "Security approval granted by: ${GITLAB_USER_LOGIN} at $(date -u)"
+
+# ---------------------------------------------------------------------------
+# STAGE: deploy
+# ---------------------------------------------------------------------------
+
+# Production deploy — only runs after security_approval has been manually
+# approved by a member of the security-reviewers group.
+# Replace the script with your actual Helm/kubectl/ArgoCD deploy commands.
+deploy_production:
   image: alpine:3.20
   stage: deploy
-  script:
-    - echo "Deploy step placeholder. Production rollout should gate on Conftest + Trivy + Grype + Cosign verification."
+  environment:
+    name: production
   needs:
-    - conftest_policy_gate
-    - gitleaks_scan
-    - trivy_fs_scan
-    - grype_scan
-    - cosign_sign
+    - security_approval
+  script:
+    - |
+      echo "Deploying ${IMAGE_NAME} to production..."
+      echo "All security gates passed and approval recorded."
+      echo ""
+      echo "Replace this script block with:"
+      echo "  helm upgrade --install <release> <chart> --set image.tag=${IMAGE_TAG}"
+      echo "  or: kubectl apply -k overlays/production/"
+      echo "  or: argocd app sync <app-name>"

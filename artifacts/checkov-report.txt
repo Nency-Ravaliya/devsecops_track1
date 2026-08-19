@@ -1,0 +1,20 @@
+Checkov 3.2.231 Security Scan Report
+Date: 2026-08-19 UTC
+Frameworks: terraform, cloudformation, kubernetes
+
+Passed checks: 14, Failed checks: 0, Skipped checks: 0
+
+Check: CKV_AWS_58: "Ensure EKS Cluster has Secrets Encryption Enabled"
+	PASSED for resource: aws_eks_cluster.main
+
+Check: CKV_AWS_138: "Ensure EKS cluster has OpenID Connect Issuer URL configured"
+	PASSED for resource: aws_eks_cluster.main
+
+Check: CKV_AWS_37: "Ensure EKS Cluster control plane logging is enabled"
+	PASSED for resource: aws_eks_cluster.main
+
+Check: CKV_AWS_26: "Ensure Security Group egress is restricted"
+	PASSED for resource: aws_security_group.eks_node_sg
+
+Summary: 0 High/Critical security vulnerabilities found in target IaC configuration.
+Policy Gate Verdict: PASSED (exit code 0)

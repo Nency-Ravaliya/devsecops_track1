@@ -1,0 +1,2 @@
+WARNING: Error loading config file: open /Users/nensiravaliya/.docker/config.json: operation not permitted
+permission denied while trying to connect to the docker API at unix:///var/run/docker.sock

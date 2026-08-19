@@ -97,10 +97,10 @@ These resources are fully recoverable from Git repositories. A cluster rebuild r
 
 | Resource | Source | Recovery method |
 |---|---|---|
-| **Terraform infrastructure** (VPC, EKS cluster, node groups, IAM roles) | Git repo: `infrastructure/terraform/` | `terraform apply` |
+| **Terraform/IaC infrastructure** (VPC, EKS cluster, node groups, IAM roles) | Git repo: `reference-target/platforms/aws-setup/` | `terraform apply` / CDK deploy |
 | **Kubernetes manifests** (Deployments, Services, ConfigMaps, Ingresses) | Git repo: application repos | `kubectl apply` or ArgoCD sync |
-| **NetworkPolicy definitions** | Git repo: `platform-policies/` | `kubectl apply` |
-| **Cilium CNI configuration** | Git repo: `infrastructure/helm-values/` | `helm upgrade --install cilium` |
+| **NetworkPolicy definitions** | Git repo: `04-network-mesh/manifests/` | `kubectl apply` |
+| **Cilium CNI configuration** | Git repo: `04-network-mesh/manifests/cilium-values.yaml` | `helm upgrade --install cilium` |
 | **Kyverno admission policies** | Git repo: `platform-policies/` | `kubectl apply` |
 | **Falco rules and configuration** | Git repo: `platform-policies/` | `helm upgrade --install falco` |
 | **ESO ExternalSecret CRDs** | Git repo: application repos | `kubectl apply` |

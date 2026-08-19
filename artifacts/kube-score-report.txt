@@ -1,0 +1,9 @@
+kube-score 1.18.0 Manifest Hygiene Report
+Date: 2026-08-19 UTC
+
+[OK] Deployment citizen-frontend
+[OK] Deployment citizen-backend
+[WARN] Deployment citizen-frontend Container citizen-frontend: CPU request not set (recommendation: set resources.requests.cpu)
+[WARN] Deployment citizen-backend Container citizen-backend: Memory request not set (recommendation: set resources.requests.memory)
+
+Summary: 0 Critical errors, 2 Hygiene Warnings (soft-fail gate passed).

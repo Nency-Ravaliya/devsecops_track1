@@ -88,7 +88,7 @@ kubectl delete clusterrole all-your-base
 
 **Step 2: Remove the chart from your deployable path**
 
-The `pwnchart` Helm chart is located at `infrastructure/helm-tiller/pwnchart/`. This chart must NOT be deployed to any cluster. If it is referenced in any pipeline or deployment script, remove the reference.
+The `pwnchart` Helm chart is located at `reference-target/infrastructure/helm-tiller/pwnchart/`. This chart must NOT be deployed to any cluster. If it is referenced in any pipeline or deployment script, remove the reference.
 
 ```bash
 # Check if the chart is referenced anywhere in your deployment scripts
