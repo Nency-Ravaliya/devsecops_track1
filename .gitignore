@@ -1,0 +1,52 @@
+# Local environment and secrets
+.env
+.env.*
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+*.jks
+
+# Kubernetes local config files
+.kube/
+.kubeconfig
+kubeconfig*
+
+# Local tooling / caches
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.log
+*.tmp
+*.temp
+
+# Build and generated artifacts
+artifacts/
+coverage/
+build/
+dist/
+node_modules/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# Docker/local image artifacts
+*.tar
+*.tgz
+
+# Office / presentation outputs
+*.docx
+*.pptx
+*.pdf
+
+# Optional: local demo output or generated reports
+*.json
+*.csv
+
+# Keep repo policy files tracked
+!platform-policies/**
+!02-pipeline-supply-chain/*.yml
+!02-pipeline-supply-chain/*.yaml

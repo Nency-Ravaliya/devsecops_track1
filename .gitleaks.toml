@@ -1,0 +1,9 @@
+title = "project gitleaks allowlist"
+
+[allowlist]
+description = "Ignore intentionally committed synthetic secrets in the Kubernetes Goat lab/reference materials and documentation examples."
+paths = [
+  "^01-findings/findings-register.md$",
+  "^06-remediation/fixed-manifests/k8s-009-fixed-secrets-external.yaml$",
+  "^reference-target/",
+]

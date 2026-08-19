@@ -184,7 +184,7 @@ AWS Secrets Manager → ESO (1h poll) → K8s Secret → Projected Volume → Po
 
 # HLD: System Context
 
-![HLD Diagram](../09-architecture/hld-diagram.drawio.svg)
+![HLD Diagram](../09-architecture/hld-diagram.png)
 
 *Defence-in-depth: WAF → Kyverno → Cilium → Falco. Each layer independent.*
 
@@ -192,7 +192,7 @@ AWS Secrets Manager → ESO (1h poll) → K8s Secret → Projected Volume → Po
 
 # LLD: Request Path — Frontend → Backend → Data
 
-![LLD Diagram](../09-architecture/lld-diagram.drawio.svg)
+![LLD Diagram](../09-architecture/lld-diagram.png)
 
 | Step | Control | Detail |
 |---|---|---|
