@@ -3,7 +3,7 @@
 ## HLD: High-Level Design — System Context
 
 ### Diagram Source
-
+. . 
 The HLD diagram is authored as Mermaid in `hld-diagram.mmd`. To render:
 
 ```bash
