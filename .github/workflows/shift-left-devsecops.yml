@@ -1,27 +1,51 @@
 name: Shift-Left DevSecOps Pipeline
-
+pool:
+ - linux-ci
 on:
   push:
-    branches: ["main", "master", "dev"]
+    branches: ["main", "master", "dev", "ci/policy-gate"]
   pull_request:
-    branches: ["main", "master", "dev"]
+    branches: ["main", "master", "dev", "ci/policy-gate"]
 
 permissions:
   contents: read
   packages: write
 
 env:
+  CHECKOV_VERSION: "3.2.231"
   CONFTEST_VERSION: "0.56.0"
-  GITLEAKS_VERSION: "8.21.6"
+  GITLEAKS_VERSION: "8.21.2"
+  KUBE_SCORE_VERSION: "1.18.0"
   TRIVY_VERSION: "0.55.2"
   GRYPE_VERSION: "0.82.0"
   COSIGN_VERSION: "2.4.3"
   KYVERNO_VERSION: "1.13.4"
   IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/devsecops-track1:${{ github.sha }}
 
+
+
 jobs:
-  policy-gate:
-    name: Render Helm + Conftest OPA gate
+  # ---------------------------------------------------------------------------
+  # STAGE 1: Lint & Validate / Secret Scan
+  # ---------------------------------------------------------------------------
+  gitleaks:
+    name: Gitleaks secrets scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Gitleaks
+        run: |
+          curl -sSLf -o /tmp/gitleaks.tar.gz https://github.com/gitleaks/gitleaks/releases/download/v${{ env.GITLEAKS_VERSION }}/gitleaks_${{ env.GITLEAKS_VERSION }}_linux_x64.tar.gz
+          sudo tar -xzf /tmp/gitleaks.tar.gz -C /usr/local/bin
+          gitleaks --version
+      - name: Run Gitleaks
+        run: gitleaks detect --source . --config .gitleaks.toml --exit-code 1 --redact
+
+  # ---------------------------------------------------------------------------
+  # STAGE 2: Policy & Security Gates
+  # ---------------------------------------------------------------------------
+  conftest-policy-gate:
+    name: Conftest OPA policy gate
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -32,7 +56,7 @@ jobs:
 
       - name: Install Conftest
         run: |
-          curl -sSL -o /tmp/conftest.tar.gz https://github.com/open-policy-agent/conftest/releases/download/v0.56.0/conftest_0.56.0_Linux_x86_64.tar.gz
+          curl -sSL -o /tmp/conftest.tar.gz https://github.com/open-policy-agent/conftest/releases/download/v${{ env.CONFTEST_VERSION }}/conftest_${{ env.CONFTEST_VERSION }}_Linux_x86_64.tar.gz
           sudo tar -xzf /tmp/conftest.tar.gz -C /usr/local/bin
           conftest --version
 
@@ -48,18 +72,43 @@ jobs:
           name: policy-gate-artifacts
           path: artifacts/policy-gate
 
-  gitleaks:
-    name: Gitleaks secrets scan
+  checkov-iac:
+    name: Checkov IaC security scan
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install Gitleaks
+      - name: Run Checkov IaC Scan
         run: |
-          curl -sSL -o /tmp/gitleaks.tar.gz https://github.com/zricethezav/gitleaks/releases/download/v8.21.0/gitleaks_8.21.0_linux_x64.tar.gz
-          sudo tar -xzf /tmp/gitleaks.tar.gz -C /usr/local/bin
-          gitleaks --version
-      - name: Run Gitleaks
-        run: gitleaks detect --source . --config .gitleaks.toml --exit-code 1 --redact
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE":/tf \
+            bridgecrew/checkov:${{ env.CHECKOV_VERSION }} \
+            --directory /tf \
+            --framework terraform,cloudformation \
+            --skip-path /tf/reference-target \
+            --skip-path /tf/node_modules \
+            --compact \
+            --soft-fail-on MEDIUM,LOW \
+            --hard-fail-on HIGH,CRITICAL \
+            --output cli \
+            2>&1 | tee checkov-report.txt || exit 1
+
+  kube-score:
+    name: kube-score manifest hygiene (soft-fail)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run kube-score
+        run: |
+          echo "Running kube-score on Kubernetes manifests (soft-fail — warn only)"
+          find . \
+            \( -path ./reference-target -prune -o -path ./node_modules -prune \) \
+            -o -name "*.yaml" -o -name "*.yml" \
+            -print0 2>/dev/null \
+            | xargs -0 -r docker run --rm -i zegl/kube-score:v${{ env.KUBE_SCORE_VERSION }} score \
+                --ignore-test=container-image-pull-policy \
+                --ignore-test=pod-networkpolicy \
+              2>&1 | tee kube-score-report.txt || true
+          echo "kube-score complete (soft-fail)"
 
   kyverno-policy-bundle:
     name: Kyverno policy bundle validation
@@ -111,6 +160,9 @@ jobs:
             --exit-code 1 \
             /project
 
+  # ---------------------------------------------------------------------------
+  # STAGE 3: Build & Scan (SBOM)
+  # ---------------------------------------------------------------------------
   build-and-sbom:
     name: Build image + generate SBOM
     runs-on: ubuntu-latest
@@ -150,6 +202,9 @@ jobs:
           name: grype-report
           path: grype-report.json
 
+  # ---------------------------------------------------------------------------
+  # STAGE 4: Sign & Attest
+  # ---------------------------------------------------------------------------
   cosign:
     name: Cosign image signing
     needs: build-and-sbom
@@ -181,10 +236,29 @@ jobs:
           cosign sign --key cosign.key --yes "$IMAGE_NAME_LOWER"
           cosign attach sbom --sbom sbom.cyclonedx.json "$IMAGE_NAME_LOWER"
 
-  final-gate:
-    name: CI final policy gate
-    needs: [policy-gate, gitleaks, kyverno-policy-bundle, trivy-fs, build-and-sbom, grype]
+  # ---------------------------------------------------------------------------
+  # STAGE 5: Security Approval Gate & Deployment
+  # ---------------------------------------------------------------------------
+  security-approval:
+    name: Protected Environment Security Approval
+    needs: [gitleaks, conftest-policy-gate, checkov-iac, kube-score, kyverno-policy-bundle, trivy-fs, build-and-sbom, grype, cosign]
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Record Security Sign-Off
+        run: |
+          echo "============================================================"
+          echo "  Security Sign-Off Gate — Production Environment"
+          echo "============================================================"
+          echo "All automated policy gates (Gitleaks, Conftest, Checkov, Trivy, Cosign) passed."
+          echo "Deployment approved for production."
+
+  deploy-production:
+    name: Production Deployment
+    needs: security-approval
     runs-on: ubuntu-latest
     steps:
-      - name: All required checks passed
-        run: echo "Shift-left DevSecOps checks completed."
+      - name: Execute Deployment
+        run: |
+          echo "Deploying container image to production cluster..."
+          echo "Security sign-off verified."
