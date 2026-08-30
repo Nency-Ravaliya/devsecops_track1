@@ -1,5 +1,6 @@
 name: Shift-Left DevSecOps Pipeline
-
+pool:
+ - linux-ci
 on:
   push:
     branches: ["main", "master", "dev", "ci/policy-gate"]
@@ -20,6 +21,8 @@ env:
   COSIGN_VERSION: "2.4.3"
   KYVERNO_VERSION: "1.13.4"
   IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/devsecops-track1:${{ github.sha }}
+
+
 
 jobs:
   # ---------------------------------------------------------------------------
